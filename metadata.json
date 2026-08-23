@@ -1,0 +1,6 @@
+{
+  "name": "AetherPlan",
+  "description": "Intelligent travel workspace with AI Co-pilot, interactive itinerary, map routing, dynamic modal replacements, and group bill split.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
