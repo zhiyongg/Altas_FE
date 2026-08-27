@@ -13,11 +13,11 @@ export const NewTripModal: React.FC<NewTripModalProps> = ({
   onClose,
   onCreateTrip,
 }) => {
-  const [destination, setDestination] = useState('Kyoto, Japan');
-  const [dates, setDates] = useState('Nov 12 - Nov 18, 2025');
+  const [destination, setDestination] = useState('');
+  const [dates, setDates] = useState('');
   const [isCalendarOpen, setIsCalendarOpen] = useState(false);
-  const [travelersCount, setTravelersCount] = useState(4);
-  const [budget, setBudget] = useState(2400);
+  const [travelersCount, setTravelersCount] = useState<number | ''>('');
+  const [budget, setBudget] = useState<number | ''>('');
 
   if (!isOpen) return null;
 

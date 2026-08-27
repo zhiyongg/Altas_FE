@@ -326,7 +326,7 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
               <span className="text-[#727785] font-medium text-sm">Estimated Total Cost</span>
               <div className="text-right">
                 <span className="font-medium text-2xl text-[#191c1d]">
-                  ¥{trip.costs.activities + trip.costs.accommodation}
+                  ${trip.costs.activities + trip.costs.accommodation}
                 </span>
                 <span className="text-sm font-normal text-[#727785] ml-2">
                   (${trip.costs.usdEstimate.toFixed(2)})
@@ -337,15 +337,15 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
             <div className="flex flex-col gap-2 pt-2 border-t border-[#e1e3e4]">
               <div className="flex justify-between text-xs text-[#727785]">
                 <span>Activities & Dining</span>
-                <span className="font-medium text-[#191c1d]">¥{trip.costs.activities.toLocaleString()}</span>
+                <span className="font-medium text-[#191c1d]">${trip.costs.activities.toLocaleString()}</span>
               </div>
               <div className="flex justify-between text-xs text-[#727785]">
                 <span>Accommodation (5 Nights)</span>
-                <span className="font-medium text-[#191c1d]">¥{trip.costs.accommodation.toLocaleString()}</span>
+                <span className="font-medium text-[#191c1d]">${trip.costs.accommodation.toLocaleString()}</span>
               </div>
               <div className="flex justify-between text-xs text-[#727785]">
                 <span>Flights (Estimate)</span>
-                <span className="font-medium text-[#191c1d]">¥{trip.costs.flights.toLocaleString()}</span>
+                <span className="font-medium text-[#191c1d]">${trip.costs.flights.toLocaleString()}</span>
               </div>
             </div>
 

@@ -13,16 +13,16 @@ export const TripGenerationPage: React.FC<TripGenerationPageProps> = ({
   onSelectExistingTrip,
   currentTrip,
 }) => {
-  const [destination, setDestination] = useState('Tokyo, Japan');
-  const [departure, setDeparture] = useState('Singapore');
-  const [dates, setDates] = useState('Oct 10 - Oct 15, 2025');
+  const [destination, setDestination] = useState('');
+  const [departure, setDeparture] = useState('');
+  const [dates, setDates] = useState('');
   const [isCalendarOpen, setIsCalendarOpen] = useState(false);
-  const [adults, setAdults] = useState(2);
-  const [children, setChildren] = useState(1);
+  const [adults, setAdults] = useState(0);
+  const [children, setChildren] = useState(0);
   const [infants, setInfants] = useState(0);
-  const [budget, setBudget] = useState(2500);
-  const [selectedVibes, setSelectedVibes] = useState<TravelVibe[]>(['moderate']);
-  const [specialRequests, setSpecialRequests] = useState('Arriving in afternoon, prefer boutique hotels and artisanal coffee & ramen.');
+  const [budget, setBudget] = useState<number | ''>('');
+  const [selectedVibes, setSelectedVibes] = useState<TravelVibe[]>([]);
+  const [specialRequests, setSpecialRequests] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
   const [budgetTouched, setBudgetTouched] = useState(false);
   const budgetError = budgetTouched && budget < 100;

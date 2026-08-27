@@ -46,7 +46,7 @@ export const App: React.FC = () => {
   const [isNewTripModalOpen, setIsNewTripModalOpen] = useState(false);
 
   // AI Chat state
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>(initialChatMessages);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [isAIGenerating, setIsAIGenerating] = useState(false);
 
   // Handle Tab changes
@@ -416,7 +416,7 @@ export const App: React.FC = () => {
         currency: 'USD',
       };
 
-      const rawDailyItinerary = apiData.daily_itinerary || [];
+      const rawDailyItinerary = apiData.daily_itinerary?.days || (Array.isArray(apiData.daily_itinerary) ? apiData.daily_itinerary : []);
       const totalDays = rawDailyItinerary.length || 3;
 
       const formattedDays = rawDailyItinerary.map((day: any, dayIdx: number) => {
@@ -478,6 +478,19 @@ export const App: React.FC = () => {
 
         // Ensure Final Day has Return Flight if not present
         if (isLastDay) {
+          const hasCheckout = items.some((it: any) => it.type === 'hotel' && it.tag === 'Hotel Check-out');
+          if (!hasCheckout) {
+            items.push({
+              id: `item-hotel-checkout-${Date.now()}`,
+              time: hotelDetails.checkOut || '11:00',
+              type: 'hotel',
+              tag: 'Hotel Check-out',
+              title: `Check-out: ${hotelDetails.name}`,
+              subtitle: `${hotelDetails.address}`,
+              hotelDetails: hotelDetails,
+            });
+          }
+
           const hasReturnFlight = items.some((it: any) => it.type === 'flight' && it.flightDetails?.direction === 'return');
           if (!hasReturnFlight) {
             items.push({
@@ -493,6 +506,9 @@ export const App: React.FC = () => {
             });
           }
         }
+
+        // Sort all items chronologically by their HH:MM time string
+        items.sort((a, b) => a.time.localeCompare(b.time));
 
         return {
           dayNumber: dayIdx + 1,
