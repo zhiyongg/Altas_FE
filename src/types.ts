@@ -1,12 +1,41 @@
 export type NavTab = 'trips' | 'dashboard' | 'assistant' | 'explore' | 'archive';
 
-export type TravelVibe = 'Chill' | 'Culture' | 'Foodie' | 'Adventure' | 'Nightlife' | 'Romantic' | 'Luxury' | 'Shopping';
+export type TravelVibe = 'relaxed' | 'moderate' | 'packed';
 
 export interface TransitInfo {
   type: 'subway' | 'train' | 'walk' | 'bus' | 'taxi';
   description: string;
   duration?: string;
   distance?: string;
+}
+
+export interface FlightDetails {
+  direction?: string;
+  carrier?: string;
+  flightNumber?: string;
+  depAirport?: string;
+  arrAirport?: string;
+  depTime?: string;
+  arrTime?: string;
+  cabin?: string;
+  fareFamily?: string;
+  price?: number;
+  currency?: string;
+  durationMinutes?: number;
+}
+
+export interface HotelDetails {
+  name?: string;
+  address?: string;
+  city?: string;
+  starRating?: number;
+  roomType?: string;
+  checkIn?: string;
+  checkOut?: string;
+  totalNights?: number;
+  pricePerNight?: number;
+  totalPrice?: number;
+  currency?: string;
 }
 
 export interface TimelineItem {
@@ -28,6 +57,8 @@ export interface TimelineItem {
   bookingRef?: string;
   terminal?: string;
   nights?: number;
+  flightDetails?: FlightDetails;
+  hotelDetails?: HotelDetails;
 }
 
 export interface DayPlan {

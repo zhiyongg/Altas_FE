@@ -16,7 +16,20 @@ import { NewTripModal } from './components/NewTripModal';
 import { ArchiveView } from './components/ArchiveView';
 
 export const App: React.FC = () => {
-  const [trip, setTrip] = useState<Trip>(mockTokyoTrip);
+  const emptyTrip: Trip = {
+    id: '',
+    title: '',
+    destination: '',
+    dates: '',
+    travelersCount: 0,
+    budget: 0,
+    vibes: [],
+    costs: { activities: 0, accommodation: 0, flights: 0, currency: 'USD', usdEstimate: 0 },
+    members: [],
+    days: []
+  };
+
+  const [trip, setTrip] = useState<Trip>(emptyTrip);
   const [activeTab, setActiveTab] = useState<NavTab>('trips');
   const [isMapView, setIsMapView] = useState<boolean>(false);
   const [activeView, setActiveView] = useState<'landing' | 'workspace' | 'finalize_pay' | 'archive'>('landing');
@@ -292,107 +305,257 @@ export const App: React.FC = () => {
   };
 
   // Create new trip
-  const handleCreateNewTrip = (newTripData: Partial<Trip>) => {
-    const newTrip: Trip = {
-      id: `trip-${Date.now()}`,
-      title: `${newTripData.destination?.split(',')[0]} Adventure`,
-      destination: newTripData.destination || 'Kyoto, Japan',
-      dates: newTripData.dates || 'Nov 12 - Nov 18, 2025',
-      travelersCount: newTripData.travelersCount || 4,
-      budget: newTripData.budget || 2400,
-      vibes: ['Culture', 'Foodie'],
-      costs: {
-        activities: 52000,
-        accommodation: 98000,
-        flights: 120000,
-        currency: '¥',
-        usdEstimate: newTripData.budget || 2400,
-      },
-      members: mockTokyoTrip.members,
-      days: [
-        {
-          dayNumber: 1,
-          dateLabel: 'Day 1 • Nov 12',
-          items: [
-            {
-              id: 'new-1',
-              time: '10:00',
-              type: 'flight',
-              tag: 'Arrival',
-              title: `Arrival at ${newTripData.destination?.split(',')[0]} International`,
-              subtitle: 'Flight confirmed • Airport express connection',
-              transitToNext: { type: 'train', description: 'Airport Express --- 45 mins ---> City Center' },
-            },
-            {
-              id: 'new-2',
-              time: '14:00',
-              type: 'hotel',
-              tag: 'Hotel',
-              title: `Check-in: Grand Central ${newTripData.destination?.split(',')[0]}`,
-              subtitle: 'Luxury King Suite • 5 Nights',
-            },
-            {
-              id: 'new-3',
-              time: '17:30',
-              type: 'culture',
-              tag: 'Sightseeing',
-              title: 'Historic District Walking Tour',
-              subtitle: 'Evening walking exploration and traditional landmarks.',
-            },
-            {
-              id: 'new-4',
-              time: '19:30',
-              type: 'dining',
-              tag: 'Dinner',
-              title: 'Local Signature Tasting Dinner',
-              subtitle: 'Michelin-guide recommended regional cuisine.',
-            },
-          ],
-        },
-        {
-          dayNumber: 2,
-          dateLabel: 'Day 2 • Nov 13',
-          items: [
-            {
-              id: 'new-5',
-              time: '09:00',
-              type: 'culture',
-              tag: 'Morning Tour',
-              title: 'Heritage Temple & Garden Walk',
-              subtitle: 'Early access guided temple meditation and gardens.',
-            },
-            {
-              id: 'new-6',
-              time: '13:00',
-              type: 'dining',
-              tag: 'Lunch',
-              title: 'Artisan Food Hall & Markets',
-              subtitle: 'Regional delicacies and seasonal sweets.',
-            },
-          ],
-        },
-      ],
-    };
-
-    setTrip(newTrip);
-    setActiveDayIndex(0);
-    setHasGeneratedItinerary(true);
-    setActiveTab('dashboard');
+  const handleCreateNewTrip = async (newTripData: Partial<Trip>) => {
+    setIsAIGenerating(true);
     setActiveView('workspace');
+    setTrip({
+      ...emptyTrip,
+      destination: newTripData.destination || 'Kota Kinabalu, Malaysia',
+      title: `${(newTripData.destination || 'Kota Kinabalu, Malaysia').split(',')[0]} Trip`,
+      dates: newTripData.dates || 'Oct 22 - Oct 25, 2026',
+    });
 
-    setChatMessages([
-      {
-        id: 'msg-start',
-        sender: 'ai',
-        text: `Welcome to your customized trip plan for ${newTrip.destination}! I've arranged your arrival, boutique hotel, and prime day experiences. What would you like to explore or adjust?`,
-        timestamp: 'Just now',
-        suggestionPills: [
-          'Add hidden gem coffee spots',
-          'Explore night markets & street food',
-          'Upgrade hotel to 5-star Ryokan',
-        ],
-      },
-    ]);
+    try {
+      const destination = newTripData.destination || 'Kota Kinabalu, Malaysia';
+      const dates = newTripData.dates || 'Oct 22 - Oct 25, 2026';
+      const budget = newTripData.budget || 2400;
+      const travelersCount = newTripData.travelersCount || 4;
+      const vibes = newTripData.vibes ? newTripData.vibes.join(', ') : '';
+      const userRequest = `Plan a trip to ${destination}. Dates: ${dates}. Budget: $${budget} per pax. Travelers: ${travelersCount}. Vibes: ${vibes}.`;
+      const customMessages = newTripData.specialRequests || "Please make sure to add an activity to visit a cafe to unwind after the flight on day 1.";
+      
+      const response = await fetch('http://127.0.0.1:8000/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_request: userRequest,
+          custom_messages: customMessages
+        }),
+      });
+
+      if (!response.ok) throw new Error(`API error: ${response.status}`);
+
+      const apiData = await response.json();
+
+      // Extract Hotel & Flight Information from API Data
+      const primaryHotel = apiData.hotels && apiData.hotels.length > 0 ? apiData.hotels[0] : null;
+      const hotelDetails = primaryHotel ? {
+        name: primaryHotel.name,
+        address: primaryHotel.address || primaryHotel.city || destination,
+        city: primaryHotel.city || destination.split(',')[0],
+        starRating: primaryHotel.star_rating || 4,
+        roomType: primaryHotel.selected_room?.room_name || 'Deluxe Room',
+        checkIn: primaryHotel.stay_schedule?.check_in_time || '15:00',
+        checkOut: primaryHotel.stay_schedule?.check_out_time || '11:00',
+        totalNights: primaryHotel.stay_schedule?.total_nights || (apiData.daily_itinerary?.length || 3) - 1,
+        pricePerNight: primaryHotel.selected_room?.price_per_night || 120,
+        totalPrice: primaryHotel.selected_room?.total_price || 360,
+        currency: primaryHotel.selected_room?.currency || 'USD',
+      } : {
+        name: `${destination.split(',')[0]} Grand Hotel & Resort`,
+        address: `Central City District, ${destination}`,
+        city: destination.split(',')[0],
+        starRating: 4,
+        roomType: 'Deluxe City View Room',
+        checkIn: '15:00',
+        checkOut: '11:00',
+        totalNights: 3,
+        pricePerNight: 140,
+        totalPrice: 420,
+        currency: 'USD',
+      };
+
+      const outboundFlightData = apiData.flights ? apiData.flights.find((f: any) => f.direction === 'outbound') || apiData.flights[0] : null;
+      const returnFlightData = apiData.flights ? apiData.flights.find((f: any) => f.direction === 'return') || apiData.flights[1] : null;
+
+      const outboundDetails = outboundFlightData ? {
+        direction: 'outbound',
+        carrier: outboundFlightData.carrier || 'Aether Air',
+        flightNumber: outboundFlightData.flight_number || 'AA 801',
+        depAirport: outboundFlightData.dep_airport || 'ORIGIN',
+        arrAirport: outboundFlightData.arr_airport || destination.slice(0, 3).toUpperCase(),
+        depTime: outboundFlightData.dep_time || '08:30',
+        arrTime: outboundFlightData.arr_time || '11:45',
+        cabin: outboundFlightData.cabin || 'Economy',
+        price: outboundFlightData.price?.total || 250,
+        currency: outboundFlightData.price?.currency || 'USD',
+      } : {
+        direction: 'outbound',
+        carrier: 'Aether Air',
+        flightNumber: 'AA 801',
+        depAirport: 'KUL',
+        arrAirport: destination.slice(0, 3).toUpperCase(),
+        depTime: '08:30',
+        arrTime: '11:45',
+        cabin: 'Economy Standard',
+        price: 250,
+        currency: 'USD',
+      };
+
+      const returnDetails = returnFlightData ? {
+        direction: 'return',
+        carrier: returnFlightData.carrier || 'Aether Air',
+        flightNumber: returnFlightData.flight_number || 'AA 802',
+        depAirport: returnFlightData.dep_airport || destination.slice(0, 3).toUpperCase(),
+        arrAirport: returnFlightData.arr_airport || 'ORIGIN',
+        depTime: returnFlightData.dep_time || '17:30',
+        arrTime: returnFlightData.arr_time || '20:45',
+        cabin: returnFlightData.cabin || 'Economy',
+        price: returnFlightData.price?.total || 250,
+        currency: returnFlightData.price?.currency || 'USD',
+      } : {
+        direction: 'return',
+        carrier: 'Aether Air',
+        flightNumber: 'AA 802',
+        depAirport: destination.slice(0, 3).toUpperCase(),
+        arrAirport: 'KUL',
+        depTime: '17:30',
+        arrTime: '20:45',
+        cabin: 'Economy Standard',
+        price: 250,
+        currency: 'USD',
+      };
+
+      const rawDailyItinerary = apiData.daily_itinerary || [];
+      const totalDays = rawDailyItinerary.length || 3;
+
+      const formattedDays = rawDailyItinerary.map((day: any, dayIdx: number) => {
+        const isFirstDay = dayIdx === 0;
+        const isLastDay = dayIdx === totalDays - 1;
+
+        let items = (day.schedule || []).map((item: any, index: number) => {
+          let itemType: 'activity' | 'hotel' | 'dining' | 'flight' = 'activity';
+          if (item.kind === 'hotel') itemType = 'hotel';
+          if (item.kind === 'meal') itemType = 'dining';
+          if (item.kind === 'flight' || item.name.toLowerCase().includes('flight') || item.name.toLowerCase().includes('arrival')) itemType = 'flight';
+
+          return {
+            id: `item-${day.day || dayIdx}-${index}-${Date.now()}`,
+            time: item.time,
+            type: itemType,
+            tag: item.kind ? item.kind.charAt(0).toUpperCase() + item.kind.slice(1) : 'Activity',
+            title: item.name,
+            subtitle: item.location?.name || 'Location confirmed',
+            details: item.rating ? `Rating: ${item.rating} ⭐ • Duration: ${item.duration_min || 60} mins` : undefined,
+            mapCoords: item.location ? { x: 0, y: 0, lat: item.location.latitude, lng: item.location.longitude } : undefined,
+            hotelDetails: itemType === 'hotel' ? hotelDetails : undefined,
+            flightDetails: itemType === 'flight' ? (isLastDay ? returnDetails : outboundDetails) : undefined,
+          };
+        });
+
+        // Ensure Day 1 has explicit Flight Arrival and Hotel Check-in items if not present
+        if (isFirstDay) {
+          const hasFlight = items.some((it: any) => it.type === 'flight');
+          const hasHotel = items.some((it: any) => it.type === 'hotel');
+
+          if (!hasFlight) {
+            items.unshift({
+              id: `item-flight-outbound-${Date.now()}`,
+              time: outboundDetails.arrTime,
+              type: 'flight',
+              tag: 'Outbound Flight',
+              title: `Arrival via ${outboundDetails.carrier} (${outboundDetails.flightNumber})`,
+              subtitle: `${outboundDetails.depAirport} ➔ ${outboundDetails.arrAirport} • ${outboundDetails.cabin}`,
+              terminal: 'Terminal 1',
+              bookingRef: `${outboundDetails.flightNumber.replace(' ', '')}-REF`,
+              flightDetails: outboundDetails,
+            });
+          }
+
+          if (!hasHotel) {
+            items.push({
+              id: `item-hotel-checkin-${Date.now()}`,
+              time: hotelDetails.checkIn || '15:00',
+              type: 'hotel',
+              tag: 'Hotel Check-in',
+              title: `Check-in: ${hotelDetails.name}`,
+              subtitle: `${hotelDetails.address} • Confirmed`,
+              nights: hotelDetails.totalNights,
+              hotelDetails: hotelDetails,
+            });
+          }
+        }
+
+        // Ensure Final Day has Return Flight if not present
+        if (isLastDay) {
+          const hasReturnFlight = items.some((it: any) => it.type === 'flight' && it.flightDetails?.direction === 'return');
+          if (!hasReturnFlight) {
+            items.push({
+              id: `item-flight-return-${Date.now()}`,
+              time: returnDetails.depTime,
+              type: 'flight',
+              tag: 'Return Flight',
+              title: `Departure via ${returnDetails.carrier} (${returnDetails.flightNumber})`,
+              subtitle: `${returnDetails.depAirport} ➔ ${returnDetails.arrAirport} • ${returnDetails.cabin}`,
+              terminal: 'Terminal 2',
+              bookingRef: `${returnDetails.flightNumber.replace(' ', '')}-RET`,
+              flightDetails: returnDetails,
+            });
+          }
+        }
+
+        return {
+          dayNumber: dayIdx + 1,
+          dateLabel: `Day ${dayIdx + 1} • ${day.date}`,
+          items: items,
+        };
+      });
+
+      const newTrip: Trip = {
+        id: `trip-${Date.now()}`,
+        title: apiData.trip_overview?.title || `${destination.split(',')[0]} Trip`,
+        destination: destination,
+        dates: dates,
+        travelersCount: travelersCount,
+        budget: budget,
+        vibes: ['Culture', 'Foodie'],
+        costs: {
+          activities: (apiData.cost_breakdown?.activities || 350) * travelersCount,
+          accommodation: hotelDetails.totalPrice || (apiData.cost_breakdown?.food_dining || 400),
+          flights: (outboundDetails.price + returnDetails.price) * travelersCount,
+          currency: apiData.cost_breakdown?.currency || 'USD',
+          usdEstimate: apiData.trip_overview?.total_estimated_budget?.amount || budget,
+        },
+        members: Array.from({ length: travelersCount }).map((_, i) => ({
+          id: `member-${i}`,
+          name: i === 0 ? 'You' : `Traveler ${i + 1}`,
+          avatar: `https://i.pravatar.cc/150?u=${i}`,
+          shareAmount: Math.round(budget / travelersCount),
+          hasPaid: i !== 0,
+          isCurrentUser: i === 0
+        })),
+        days: formattedDays,
+      };
+
+      setTrip(newTrip);
+      setActiveDayIndex(0);
+      setHasGeneratedItinerary(true);
+      setActiveTab('dashboard');
+      setActiveView('workspace');
+      setIsAIGenerating(false);
+
+      setChatMessages([
+        {
+          id: 'msg-start',
+          sender: 'ai',
+          text: `Welcome to your customized trip plan for ${newTrip.destination}! I've generated an itinerary with verified flights (${outboundDetails.carrier} ${outboundDetails.flightNumber}) and hotel booking (${hotelDetails.name}).`,
+          timestamp: 'Just now',
+          suggestionPills: ['Find rooftop dining nearby', 'Explore local night markets'],
+        },
+      ]);
+    } catch (error) {
+      console.error("Error generating trip:", error);
+      setIsAIGenerating(false);
+      setChatMessages(prev => [
+        ...prev,
+        {
+          id: `msg-error-${Date.now()}`,
+          sender: 'ai',
+          text: `Sorry, I encountered an error while planning your trip. Please make sure the Python API is running on port 8000!`,
+          timestamp: 'Just now',
+        }
+      ]);
+    }
   };
 
   return (

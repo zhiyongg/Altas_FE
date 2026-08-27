@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Trip, TimelineItem } from '../types';
+import { TimelineLoadingView } from './TimelineLoadingView';
 
 interface TimelineViewProps {
   trip: Trip;
@@ -11,6 +12,7 @@ interface TimelineViewProps {
   onEditItem: (item: TimelineItem) => void;
   onDeleteItem: (itemId: string) => void;
   onProceedToSplitPay: () => void;
+  isGenerating?: boolean;
 }
 
 export const TimelineView: React.FC<TimelineViewProps> = ({
@@ -23,6 +25,7 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
   onEditItem,
   onDeleteItem,
   onProceedToSplitPay,
+  isGenerating = false,
 }) => {
   const [expandedTransits, setExpandedTransits] = useState<Record<string, boolean>>({});
 
@@ -34,6 +37,10 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
   };
 
   const currentDay = trip.days[activeDayIndex] || trip.days[0];
+
+  if (isGenerating || !currentDay || trip.days.length === 0) {
+    return <TimelineLoadingView destination={trip.destination || 'Destination'} />;
+  }
 
   const getCategoryIcon = (type: string, tag: string) => {
     switch (type) {
@@ -161,43 +168,96 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
                       </div>
                     )}
 
-                    {/* Special Action Buttons for Flights & Hotels */}
+                    {/* Rich Flight Card Details */}
                     {item.type === 'flight' && (
-                      <div className="mt-3 pt-3 border-t border-[#f3f4f5] flex flex-wrap gap-2">
-                        <button
-                          onClick={onOpenChangeFlight}
-                          className="bg-[#d8e2ff] text-[#001a42] px-3.5 py-1.5 rounded-full text-xs font-semibold hover:bg-[#adc6ff] transition-colors flex items-center gap-1.5 cursor-pointer shadow-2xs"
-                        >
-                          <span className="material-symbols-outlined text-[16px]">sync_alt</span>
-                          Change Flight
-                        </button>
-                        <span className="text-xs text-[#727785] flex items-center px-2">
-                          Terminal: {item.terminal || 'T2'} • Ref: {item.bookingRef || 'JL-001'}
-                        </span>
+                      <div className="mt-3 bg-[#f8f9fa] border border-[#e1e3e4] rounded-xl p-3.5 space-y-2 text-xs">
+                        <div className="flex items-center justify-between font-semibold text-[#191c1d]">
+                          <div className="flex items-center gap-1.5 text-[#0058be]">
+                            <span className="material-symbols-outlined text-[18px]">flight</span>
+                            <span>{item.flightDetails?.carrier || 'Airline Carrier'} ({item.flightDetails?.flightNumber || 'FLIGHT'})</span>
+                          </div>
+                          <span className="bg-[#d8e2ff] text-[#001a42] px-2 py-0.5 rounded-full text-[11px]">
+                            {item.flightDetails?.cabin || 'Economy'}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center justify-between text-[#424754]">
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-sm text-[#191c1d]">{item.flightDetails?.depTime || item.time}</span>
+                            <span className="font-semibold">{item.flightDetails?.depAirport || 'DEP'}</span>
+                            <span className="material-symbols-outlined text-[16px] text-[#727785]">arrow_forward</span>
+                            <span className="font-semibold">{item.flightDetails?.arrAirport || 'ARR'}</span>
+                            <span className="font-bold text-sm text-[#191c1d]">{item.flightDetails?.arrTime || item.time}</span>
+                          </div>
+                          {item.flightDetails?.price && (
+                            <span className="font-bold text-[#006c49] text-xs">
+                              {item.flightDetails.currency || '$'}{item.flightDetails.price} / pax
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="pt-2 border-t border-[#e1e3e4] flex items-center justify-between">
+                          <span className="text-[11px] text-[#727785]">
+                            Terminal: {item.terminal || 'T1'} • Booking Ref: {item.bookingRef || 'JL-88419'}
+                          </span>
+                          <button
+                            onClick={onOpenChangeFlight}
+                            className="bg-[#d8e2ff] text-[#001a42] px-3 py-1 rounded-full text-xs font-semibold hover:bg-[#adc6ff] transition-colors flex items-center gap-1 cursor-pointer shadow-2xs"
+                          >
+                            <span className="material-symbols-outlined text-[14px]">sync_alt</span>
+                            Change Flight
+                          </button>
+                        </div>
                       </div>
                     )}
 
+                    {/* Rich Hotel Card Details */}
                     {item.type === 'hotel' && (
-                      <div className="mt-3 pt-3 border-t border-[#f3f4f5] flex flex-wrap gap-2">
-                        <button
-                          onClick={onOpenChangeHotel}
-                          className="bg-[#d8e2ff] text-[#001a42] px-3.5 py-1.5 rounded-full text-xs font-semibold hover:bg-[#adc6ff] transition-colors flex items-center gap-1.5 cursor-pointer shadow-2xs"
-                        >
-                          <span className="material-symbols-outlined text-[16px]">sync_alt</span>
-                          Change Hotel
-                        </button>
-                        <button
-                          onClick={() => alert(`Showing map location for ${item.title}`)}
-                          className="bg-[#f3f4f5] text-[#0058be] px-3 py-1 rounded-full text-xs font-medium hover:bg-[#e1e3e4] transition-colors flex items-center gap-1 cursor-pointer"
-                        >
-                          <span className="material-symbols-outlined text-[16px]">map</span> View Map
-                        </button>
-                        <button
-                          onClick={() => alert(`Keio Plaza Hotel: Shinjuku City, Tokyo. 5 Nights Confirmed.`)}
-                          className="bg-[#f3f4f5] text-[#0058be] px-3 py-1 rounded-full text-xs font-medium hover:bg-[#e1e3e4] transition-colors flex items-center gap-1 cursor-pointer"
-                        >
-                          <span className="material-symbols-outlined text-[16px]">receipt_long</span> Details
-                        </button>
+                      <div className="mt-3 bg-[#f8f9fa] border border-[#e1e3e4] rounded-xl p-3.5 space-y-2 text-xs">
+                        <div className="flex items-center justify-between font-semibold text-[#191c1d]">
+                          <div className="flex items-center gap-1.5 text-[#0058be]">
+                            <span className="material-symbols-outlined text-[18px]">hotel</span>
+                            <span>{item.hotelDetails?.name || item.title}</span>
+                          </div>
+                          {item.hotelDetails?.starRating && (
+                            <div className="flex items-center text-[#e5a900] bg-[#fff8e1] px-2 py-0.5 rounded-full text-[11px] font-bold">
+                              <span>{item.hotelDetails.starRating}★ Hotel</span>
+                            </div>
+                          )}
+                        </div>
+
+                        {item.hotelDetails?.address && (
+                          <p className="text-[11px] text-[#727785] flex items-center gap-1">
+                            <span className="material-symbols-outlined text-[14px]">location_on</span>
+                            {item.hotelDetails.address}
+                          </p>
+                        )}
+
+                        <div className="flex flex-wrap gap-2 text-[11px]">
+                          <span className="bg-white border border-[#e1e3e4] px-2.5 py-1 rounded-md text-[#424754]">
+                            Room: <strong>{item.hotelDetails?.roomType || 'Standard Deluxe'}</strong>
+                          </span>
+                          <span className="bg-white border border-[#e1e3e4] px-2.5 py-1 rounded-md text-[#424754]">
+                            Check-in: <strong>{item.hotelDetails?.checkIn || '15:00'}</strong> | Check-out: <strong>{item.hotelDetails?.checkOut || '11:00'}</strong>
+                          </span>
+                        </div>
+
+                        <div className="pt-2 border-t border-[#e1e3e4] flex items-center justify-between">
+                          <span className="text-[11px] font-semibold text-[#006c49]">
+                            {item.hotelDetails?.pricePerNight
+                              ? `${item.hotelDetails.currency || '$'}${item.hotelDetails.pricePerNight} / night`
+                              : 'Confirmed Booking'}
+                          </span>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={onOpenChangeHotel}
+                              className="bg-[#d8e2ff] text-[#001a42] px-3 py-1 rounded-full text-xs font-semibold hover:bg-[#adc6ff] transition-colors flex items-center gap-1 cursor-pointer shadow-2xs"
+                            >
+                              <span className="material-symbols-outlined text-[14px]">sync_alt</span>
+                              Change Hotel
+                            </button>
+                          </div>
+                        </div>
                       </div>
                     )}
                   </div>

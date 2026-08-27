@@ -21,36 +21,27 @@ export const TripGenerationPage: React.FC<TripGenerationPageProps> = ({
   const [children, setChildren] = useState(1);
   const [infants, setInfants] = useState(0);
   const [budget, setBudget] = useState(2500);
-  const [selectedVibes, setSelectedVibes] = useState<TravelVibe[]>(['Chill', 'Foodie', 'Culture']);
+  const [selectedVibes, setSelectedVibes] = useState<TravelVibe[]>(['moderate']);
   const [specialRequests, setSpecialRequests] = useState('Arriving in afternoon, prefer boutique hotels and artisanal coffee & ramen.');
   const [isGenerating, setIsGenerating] = useState(false);
   const [budgetTouched, setBudgetTouched] = useState(false);
   const budgetError = budgetTouched && budget < 100;
 
   const availableVibes: TravelVibe[] = [
-    'Chill',
-    'Culture',
-    'Foodie',
-    'Adventure',
-    'Nightlife',
-    'Romantic',
-    'Luxury',
-    'Shopping',
+    'relaxed',
+    'moderate',
+    'packed'
   ];
 
   const popularDestinations = [
-    { name: 'Tokyo, Japan', dates: 'Oct 10 - Oct 15, 2025', budget: 2500, vibes: ['Chill', 'Foodie', 'Culture'] as TravelVibe[], img: 'https://images.unsplash.com/photo-1503899036084-c55cdd92da26?auto=format&fit=crop&w=600&q=80' },
-    { name: 'Kyoto, Japan', dates: 'Nov 12 - Nov 18, 2025', budget: 2200, vibes: ['Culture', 'Romantic', 'Chill'] as TravelVibe[], img: 'https://images.unsplash.com/photo-1493976040374-85c8e12f0c0e?auto=format&fit=crop&w=600&q=80' },
-    { name: 'Seoul, South Korea', dates: 'Sep 20 - Sep 26, 2025', budget: 1900, vibes: ['Foodie', 'Shopping', 'Nightlife'] as TravelVibe[], img: 'https://images.unsplash.com/photo-1538485399081-7191377e8241?auto=format&fit=crop&w=600&q=80' },
-    { name: 'Paris, France', dates: 'Dec 05 - Dec 11, 2025', budget: 3200, vibes: ['Romantic', 'Culture', 'Foodie'] as TravelVibe[], img: 'https://images.unsplash.com/photo-1502602898657-3e91760cbb34?auto=format&fit=crop&w=600&q=80' },
+    { name: 'Tokyo, Japan', dates: 'Oct 10 - Oct 15, 2025', budget: 2500, vibes: ['packed'] as TravelVibe[], img: 'https://images.unsplash.com/photo-1503899036084-c55cdd92da26?auto=format&fit=crop&w=600&q=80' },
+    { name: 'Kyoto, Japan', dates: 'Nov 12 - Nov 18, 2025', budget: 2200, vibes: ['relaxed'] as TravelVibe[], img: 'https://images.unsplash.com/photo-1493976040374-85c8e12f0c0e?auto=format&fit=crop&w=600&q=80' },
+    { name: 'Seoul, South Korea', dates: 'Sep 20 - Sep 26, 2025', budget: 1900, vibes: ['moderate'] as TravelVibe[], img: 'https://images.unsplash.com/photo-1538485399081-7191377e8241?auto=format&fit=crop&w=600&q=80' },
+    { name: 'Paris, France', dates: 'Dec 05 - Dec 11, 2025', budget: 3200, vibes: ['moderate'] as TravelVibe[], img: 'https://images.unsplash.com/photo-1502602898657-3e91760cbb34?auto=format&fit=crop&w=600&q=80' },
   ];
 
   const toggleVibe = (vibe: TravelVibe) => {
-    if (selectedVibes.includes(vibe)) {
-      setSelectedVibes(selectedVibes.filter((v) => v !== vibe));
-    } else {
-      setSelectedVibes([...selectedVibes, vibe]);
-    }
+    setSelectedVibes([vibe]); // Enforce single selection for pacing style
   };
 
   const handleGenerate = (e: React.FormEvent) => {
@@ -60,17 +51,15 @@ export const TripGenerationPage: React.FC<TripGenerationPageProps> = ({
     setIsGenerating(true);
 
     const travelersCount = adults + children + infants;
-    setTimeout(() => {
-      onGenerateTrip({
-        destination,
-        dates,
-        travelersCount,
-        budget,
-        vibes: selectedVibes,
-        specialRequests,
-      });
-      setIsGenerating(false);
-    }, 600);
+    onGenerateTrip({
+      destination,
+      dates,
+      travelersCount,
+      budget,
+      vibes: selectedVibes,
+      specialRequests,
+    });
+    setIsGenerating(false);
   };
 
   return (
