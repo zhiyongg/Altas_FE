@@ -122,20 +122,40 @@ export interface FlightOption {
   seatsLeft: number;
 }
 
-export interface StayOption {
-  id: string;
-  name: string;
-  location: string;
-  rating: number;
-  reviewsCount: number;
-  pricePerNight: number;
-  currencySymbol: string;
-  image: string;
-  isSponsored: boolean;
-  nights: number;
-  tags?: string[];
-  isFavorite?: boolean;
+export interface RoomOption {
+  room_name: string;
+  max_occupancy: number;
+  price_per_night: number;
+  total_price: number;
+  currency: string;
+  breakfast_included: boolean;
+  is_refundable: boolean;
+  cancellation_policy: string | null;
 }
+ 
+export interface StaySchedule {
+  check_in_date: string;
+  check_in_time: string;
+  check_out_date: string;
+  check_out_time: string;
+  total_nights: number;
+}
+ 
+export interface StayOption {
+  hotel_id: string;
+  name: string;
+  address: string | null;
+  city: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  star_rating: number | null;
+  rating: number | null;          // guest review score, e.g. 8.7 - null until StayAPI/mock data supplies it
+  review_count: number | null;
+  image_url: string | null;       // null until StayAPI/mock data supplies it - render a placeholder image when null
+  is_sponsored: boolean;
+  stay_schedule: StaySchedule;
+  selected_room: RoomOption;
+  available_rooms: RoomOption[];
 
 export interface ActivityOption {
   id: string;
