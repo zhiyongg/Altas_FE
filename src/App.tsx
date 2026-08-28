@@ -111,45 +111,56 @@ export const App: React.FC = () => {
     setIsFlightModalOpen(false);
   };
 
-  // Switch Accommodation
-  const handleSelectAccommodation = (stay: StayOption) => {
-    setTrip((prev) => {
-      const updatedDays = prev.days.map((day) => ({
-        ...day,
-        items: day.items.map((item) => {
-          if (item.type === 'hotel') {
-            return {
-              ...item,
-              title: `Check-in: ${stay.name}`,
-              subtitle: `${stay.location} • Confirmed`,
-              image: stay.image,
-            };
-          }
-          return item;
-        }),
-      }));
-
-      const newAccomTotal = stay.pricePerNight * 5;
-      return {
-        ...prev,
-        days: updatedDays,
-        costs: {
-          ...prev.costs,
-          accommodation: newAccomTotal,
-          usdEstimate: (prev.costs.activities + newAccomTotal) / 150 + prev.costs.flights / 150,
-        },
-      };
-    });
-
-    const confirmMsg: ChatMessage = {
-      id: `msg-${Date.now()}`,
-      sender: 'ai',
-      text: `Upgraded your stay to ${stay.name} (${stay.location}). Total accommodation updated to ¥${(stay.pricePerNight * 5).toLocaleString()}.`,
-      timestamp: 'Just now',
+//switch accomodation
+import { currencySymbol } from '../currency';
+ 
+const handleSelectAccommodation = (stay: StayOption) => {
+  const locationLabel = [stay.address, stay.city].filter(Boolean).join(', ') || stay.name;
+ 
+  setTrip((prev) => {
+    const updatedDays = prev.days.map((day) => ({
+      ...day,
+      items: day.items.map((item) => {
+        if (item.type === 'hotel') {
+          return {
+            ...item,
+            title: `Check-in: ${stay.name}`,
+            subtitle: `${locationLabel} • Confirmed`,
+            image: stay.image_url ?? item.image,
+          };
+        }
+        return item;
+      }),
+    }));
+ 
+    const newAccomTotal = stay.selected_room.total_price;
+ 
+    return {
+      ...prev,
+      days: updatedDays,
+      costs: {
+        ...prev.costs,
+        accommodation: newAccomTotal,
+        // NOTE: this still assumes activities/flights are in the same
+        // currency as the old ¥-based estimate. If selected_room.currency
+        // can differ per hotel, this conversion needs a real FX rate rather
+        // than a hardcoded /150 — flagging rather than guessing at one.
+        usdEstimate: (prev.costs.activities + newAccomTotal) / 150 + prev.costs.flights / 150,
+      },
     };
-    setChatMessages((prev) => [...prev, confirmMsg]);
-    setIsAccommodationModalOpen(false);
+  });
+ 
+  const confirmMsg: ChatMessage = {
+    id: `msg-${Date.now()}`,
+    sender: 'ai',
+    text: `Upgraded your stay to ${stay.name} (${locationLabel}). Total accommodation updated to ${currencySymbol(
+      stay.selected_room.currency
+    )}${stay.selected_room.total_price.toLocaleString()}.`,
+    timestamp: 'Just now',
   };
+  setChatMessages((prev) => [...prev, confirmMsg]);
+  setIsAccommodationModalOpen(false);
+};
 
   // Add Activity to current day
   const handleAddActivity = (activity: ActivityOption) => {
