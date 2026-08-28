@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Trip, TravelVibe } from '../types';
 import { DateRangePicker } from './DateRangePicker';
+import { AirportAutocomplete } from './AirportAutocomplete';
 
 interface TripGenerationPageProps {
   onGenerateTrip: (tripData: Partial<Trip>) => void;
@@ -87,33 +88,27 @@ export const TripGenerationPage: React.FC<TripGenerationPageProps> = ({
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {/* Departure */}
               <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-[#727785] mb-2 flex items-center gap-1.5">
-                  <span className="material-symbols-outlined text-[18px] text-[#0058be]">flight_takeoff</span>
+                <label className="block text-xs font-bold uppercase tracking-wider text-[#727785] mb-2">
                   Departure
                 </label>
-                <input
-                  type="text"
+                <AirportAutocomplete
                   value={departure}
-                  onChange={(e) => setDeparture(e.target.value)}
-                  placeholder="e.g. Singapore"
-                  required
-                  className="w-full bg-[#f8f9fa] border border-[#e1e3e4] rounded-2xl px-4 py-3 text-sm text-[#191c1d] focus:bg-white focus:ring-2 focus:ring-[#0058be] outline-none transition-all font-medium"
+                  onChange={setDeparture}
+                  placeholder="e.g. Singapore (SIN)"
+                  icon="flight_takeoff"
                 />
               </div>
 
               {/* Destination */}
               <div>
-                <label className="block text-xs font-bold uppercase tracking-wider text-[#727785] mb-2 flex items-center gap-1.5">
-                  <span className="material-symbols-outlined text-[18px] text-[#0058be]">location_on</span>
+                <label className="block text-xs font-bold uppercase tracking-wider text-[#727785] mb-2">
                   Destination
                 </label>
-                <input
-                  type="text"
+                <AirportAutocomplete
                   value={destination}
-                  onChange={(e) => setDestination(e.target.value)}
-                  placeholder="e.g. Tokyo, Japan"
-                  required
-                  className="w-full bg-[#f8f9fa] border border-[#e1e3e4] rounded-2xl px-4 py-3 text-sm text-[#191c1d] focus:bg-white focus:ring-2 focus:ring-[#0058be] outline-none transition-all font-medium"
+                  onChange={setDestination}
+                  placeholder="e.g. Tokyo, Japan (HND)"
+                  icon="location_on"
                 />
               </div>
             </div>

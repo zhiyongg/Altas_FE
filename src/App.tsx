@@ -313,6 +313,7 @@ export const App: React.FC = () => {
       destination: newTripData.destination || 'Kota Kinabalu, Malaysia',
       title: `${(newTripData.destination || 'Kota Kinabalu, Malaysia').split(',')[0]} Trip`,
       dates: newTripData.dates || 'Oct 22 - Oct 25, 2026',
+      travelersCount: newTripData.travelersCount || 4,
     });
 
     try {
@@ -435,11 +436,15 @@ export const App: React.FC = () => {
             type: itemType,
             tag: item.kind ? item.kind.charAt(0).toUpperCase() + item.kind.slice(1) : 'Activity',
             title: item.name,
-            subtitle: item.location?.name || 'Location confirmed',
+            subtitle: item.location?.address || '',
             details: item.rating ? `Rating: ${item.rating} ⭐ • Duration: ${item.duration_min || 60} mins` : undefined,
             mapCoords: item.location ? { x: 0, y: 0, lat: item.location.latitude, lng: item.location.longitude } : undefined,
             hotelDetails: itemType === 'hotel' ? hotelDetails : undefined,
             flightDetails: itemType === 'flight' ? (isLastDay ? returnDetails : outboundDetails) : undefined,
+            transitToNext: item.transit_to_next ? {
+              type: item.transit_to_next.mode,
+              description: item.transit_to_next.description,
+            } : undefined,
           };
         });
 
