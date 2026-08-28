@@ -1,5 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Trip, TimelineItem, ChatMessage, FlightOption, StayOption, ActivityOption, NavTab } from './types';
+import { recalculateSchedule } from './utils/recalculateSchedule';
+import { recalculateRoute } from './utils/routeApi';
+import { timeToMinutes } from './utils/time';
 import { initialTokyoTrip as mockTokyoTrip, initialChatMessages } from './data/mockTripData';
 import { TopNavBar } from './components/TopNavBar';
 import { SubPlannerBar } from './components/SubPlannerBar';
@@ -49,6 +52,25 @@ export const App: React.FC = () => {
   // AI Chat state
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [isAIGenerating, setIsAIGenerating] = useState(false);
+
+  // Debounced transit refinement state (drag-and-drop reordering)
+  const refineTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refineSeqRef = useRef<number>(0);
+
+  // Clear any pending refinement debounce timer on unmount
+  useEffect(() => {
+    return () => {
+      if (refineTimerRef.current) clearTimeout(refineTimerRef.current);
+    };
+  }, []);
+
+  // Switching trips invalidates any refinement pending for the previous trip
+  useEffect(() => {
+    if (refineTimerRef.current) {
+      clearTimeout(refineTimerRef.current);
+      refineTimerRef.current = null;
+    }
+  }, [trip.id]);
 
   // Handle Tab changes
   const handleSelectTab = (tab: NavTab) => {
@@ -206,7 +228,7 @@ export const App: React.FC = () => {
           : [...day.items, savedItem];
 
         // Sort items chronologically by time
-        newItems.sort((a, b) => a.time.localeCompare(b.time));
+        newItems.sort((a, b) => timeToMinutes(a.time) - timeToMinutes(b.time));
         return { ...day, items: newItems };
       });
       return { ...prev, days: updatedDays };
@@ -214,6 +236,76 @@ export const App: React.FC = () => {
 
     setIsEditItemModalOpen(false);
     setEditingItem(null);
+  };
+
+  // Reorder items in the active day (drag-and-drop)
+  const handleReorderItems = (newItems: TimelineItem[]) => {
+    const currentDayItems = trip.days[activeDayIndex]?.items;
+    if (!currentDayItems) return;
+
+    // Optimistic client-side recalculation of times & transit
+    const recalculated = recalculateSchedule(currentDayItems, newItems);
+    setTrip((prev) => {
+      const updatedDays = prev.days.map((day, idx) =>
+        idx !== activeDayIndex ? day : { ...day, items: recalculated }
+      );
+      return { ...prev, days: updatedDays };
+    });
+
+    // Debounced backend refinement of transit durations with real routing data
+    if (refineTimerRef.current) clearTimeout(refineTimerRef.current);
+    const dayIndex = activeDayIndex;
+    const orderSignature = recalculated.map((it) => it.id).join('|');
+
+    refineTimerRef.current = setTimeout(async () => {
+      const seq = ++refineSeqRef.current;
+      const waypoints = recalculated
+        .filter((it) => it.mapCoords?.lat != null && it.mapCoords?.lng != null)
+        .map((it) => ({ id: it.id, lat: it.mapCoords!.lat!, lng: it.mapCoords!.lng! }));
+      if (waypoints.length < 2) return;
+
+      const legs = await recalculateRoute(waypoints);
+      if (!legs) {
+        console.warn('Transit refinement unavailable; keeping optimistic estimates.');
+        return;
+      }
+      // Ignore stale responses (a newer refinement request was issued since)
+      if (seq !== refineSeqRef.current) return;
+
+      setTrip((prev) => {
+        const day = prev.days[dayIndex];
+        if (!day) return prev;
+        // Ignore if the day's item order changed since the request was made
+        if (day.items.map((it) => it.id).join('|') !== orderSignature) return prev;
+
+        const refinedItems = day.items.map((item, idx) => {
+          const next = day.items[idx + 1];
+          if (!next) return item;
+          const leg = legs.find((l) => l.fromId === item.id && l.toId === next.id);
+          if (!leg) return item;
+
+          const mins = Math.max(1, Math.round(leg.durationMinutes));
+          const meters = Math.round(leg.distanceMeters);
+          const isWalk = leg.mode === 'walk';
+          return {
+            ...item,
+            transitToNext: {
+              type: leg.mode,
+              description: isWalk
+                ? `Walk --- ${meters}m (${mins} mins) ---> ${next.title}`
+                : `Transit --- ${mins} mins ---> ${next.title}`,
+              duration: `${mins} mins`,
+              distance: meters >= 1000 ? `${(meters / 1000).toFixed(1)}km` : `${meters}m`,
+            },
+          };
+        });
+
+        const updatedDays = prev.days.map((d, idx) =>
+          idx !== dayIndex ? d : { ...d, items: refinedItems }
+        );
+        return { ...prev, days: updatedDays };
+      });
+    }, 800);
   };
 
   // Delete item
@@ -514,7 +606,7 @@ export const App: React.FC = () => {
         }
 
         // Sort all items chronologically by their HH:MM time string
-        items.sort((a, b) => a.time.localeCompare(b.time));
+        items.sort((a, b) => timeToMinutes(a.time) - timeToMinutes(b.time));
 
         return {
           dayNumber: dayIdx + 1,
@@ -681,6 +773,7 @@ export const App: React.FC = () => {
                 setIsEditItemModalOpen(true);
               }}
               onDeleteItem={handleDeleteItem}
+              onReorderItems={handleReorderItems}
               onProceedToSplitPay={() => setActiveView('finalize_pay')}
             />
           </div>
