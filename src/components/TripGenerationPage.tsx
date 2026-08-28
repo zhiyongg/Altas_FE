@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Trip, TravelVibe } from '../types';
 import { DateRangePicker } from './DateRangePicker';
 import { AirportAutocomplete } from './AirportAutocomplete';
+import { featuredTrips } from '../data/featuredTrips';
 
 interface TripGenerationPageProps {
   onGenerateTrip: (tripData: Partial<Trip>) => void;
@@ -34,12 +35,12 @@ export const TripGenerationPage: React.FC<TripGenerationPageProps> = ({
     'packed'
   ];
 
-  const popularDestinations = [
-    { name: 'Tokyo, Japan', dates: 'Oct 10 - Oct 15, 2025', budget: 2500, vibes: ['packed'] as TravelVibe[], img: 'https://images.unsplash.com/photo-1503899036084-c55cdd92da26?auto=format&fit=crop&w=600&q=80' },
-    { name: 'Kyoto, Japan', dates: 'Nov 12 - Nov 18, 2025', budget: 2200, vibes: ['relaxed'] as TravelVibe[], img: 'https://images.unsplash.com/photo-1493976040374-85c8e12f0c0e?auto=format&fit=crop&w=600&q=80' },
-    { name: 'Seoul, South Korea', dates: 'Sep 20 - Sep 26, 2025', budget: 1900, vibes: ['moderate'] as TravelVibe[], img: 'https://images.unsplash.com/photo-1538485399081-7191377e8241?auto=format&fit=crop&w=600&q=80' },
-    { name: 'Paris, France', dates: 'Dec 05 - Dec 11, 2025', budget: 3200, vibes: ['moderate'] as TravelVibe[], img: 'https://images.unsplash.com/photo-1502602898657-3e91760cbb34?auto=format&fit=crop&w=600&q=80' },
-  ];
+  const tripImages: Record<string, string> = {
+    'feat-tokyo': 'https://images.unsplash.com/photo-1503899036084-c55cdd92da26?auto=format&fit=crop&w=600&q=80',
+    'feat-kyoto': 'https://images.unsplash.com/photo-1493976040374-85c8e12f0c0e?auto=format&fit=crop&w=600&q=80',
+    'feat-seoul': 'https://images.unsplash.com/photo-1538485399081-7191377e8241?auto=format&fit=crop&w=600&q=80',
+    'feat-paris': 'https://images.unsplash.com/photo-1502602898657-3e91760cbb34?auto=format&fit=crop&w=600&q=80',
+  };
 
   const toggleVibe = (vibe: TravelVibe) => {
     setSelectedVibes([vibe]); // Enforce single selection for pacing style
@@ -382,47 +383,45 @@ export const TripGenerationPage: React.FC<TripGenerationPageProps> = ({
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            {popularDestinations.map((dest) => (
-              <div
-                key={dest.name}
-                onClick={() => {
-                  setDestination(dest.name);
-                  setDates(dest.dates);
-                  setBudget(dest.budget);
-                  setSelectedVibes(dest.vibes);
-                }}
-                className="group relative rounded-2xl overflow-hidden border border-[#e1e3e4] bg-white cursor-pointer hover:shadow-md transition-all hover:border-[#0058be]"
-              >
-                <div className="h-36 w-full overflow-hidden relative">
-                  <img
-                    src={dest.img}
-                    alt={dest.name}
-                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                  />
-                  <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent"></div>
-                  <span className="absolute bottom-2.5 left-3 text-white font-bold text-sm drop-shadow-sm">
-                    {dest.name}
-                  </span>
-                </div>
-                <div className="p-3">
-                  <p className="text-xs text-[#727785] mb-2">{dest.dates}</p>
-                  <div className="flex flex-wrap gap-1 mb-2">
-                    {dest.vibes.map((v) => (
-                      <span key={v} className="text-[10px] bg-[#f3f4f5] text-[#424754] px-2 py-0.5 rounded-full">
-                        {v}
-                      </span>
-                    ))}
-                  </div>
-                  <div className="flex items-center justify-between text-xs pt-1 border-t border-[#f3f4f5]">
-                    <span className="font-semibold text-[#0058be]">${dest.budget} est.</span>
-                    <span className="text-[11px] font-medium text-[#727785] group-hover:text-[#0058be] flex items-center gap-0.5">
-                      Select
-                      <span className="material-symbols-outlined text-[14px]">chevron_right</span>
+            {featuredTrips.map((trip) => {
+              const img = tripImages[trip.id];
+              return (
+                <div
+                  key={trip.id}
+                  onClick={() => onSelectExistingTrip(trip)}
+                  className="group relative rounded-2xl overflow-hidden border border-[#e1e3e4] bg-white cursor-pointer hover:shadow-md transition-all hover:border-[#0058be]"
+                >
+                  <div className="h-36 w-full overflow-hidden relative">
+                    <img
+                      src={img}
+                      alt={trip.destination}
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent"></div>
+                    <span className="absolute bottom-2.5 left-3 text-white font-bold text-sm drop-shadow-sm">
+                      {trip.destination}
                     </span>
                   </div>
+                  <div className="p-3">
+                    <p className="text-xs text-[#727785] mb-2">{trip.dates}</p>
+                    <div className="flex flex-wrap gap-1 mb-2">
+                      {trip.vibes.map((v) => (
+                        <span key={v} className="text-[10px] bg-[#f3f4f5] text-[#424754] px-2 py-0.5 rounded-full uppercase tracking-wider">
+                          {v}
+                        </span>
+                      ))}
+                    </div>
+                    <div className="flex items-center justify-between text-xs pt-1 border-t border-[#f3f4f5]">
+                      <span className="font-semibold text-[#0058be]">${trip.budget} est.</span>
+                      <span className="text-[11px] font-medium text-[#727785] group-hover:text-[#0058be] flex items-center gap-0.5">
+                        Select
+                        <span className="material-symbols-outlined text-[14px]">chevron_right</span>
+                      </span>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       </div>

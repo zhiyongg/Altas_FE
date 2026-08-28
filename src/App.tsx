@@ -14,6 +14,7 @@ import { ChangeAccommodationModal } from './components/ChangeAccommodationModal'
 import { EditActivityModal } from './components/EditActivityModal';
 import { NewTripModal } from './components/NewTripModal';
 import { ArchiveView } from './components/ArchiveView';
+import { ExploreView } from './components/ExploreView';
 
 export const App: React.FC = () => {
   const emptyTrip: Trip = {
@@ -32,7 +33,7 @@ export const App: React.FC = () => {
   const [trip, setTrip] = useState<Trip>(emptyTrip);
   const [activeTab, setActiveTab] = useState<NavTab>('trips');
   const [isMapView, setIsMapView] = useState<boolean>(false);
-  const [activeView, setActiveView] = useState<'landing' | 'workspace' | 'finalize_pay' | 'archive'>('landing');
+  const [activeView, setActiveView] = useState<'landing' | 'workspace' | 'finalize_pay' | 'archive' | 'explore'>('landing');
   const [activeDayIndex, setActiveDayIndex] = useState<number>(0);
   const [hasGeneratedItinerary, setHasGeneratedItinerary] = useState<boolean>(false);
   const [archivedTrips, setArchivedTrips] = useState<Trip[]>([]);
@@ -57,7 +58,7 @@ export const App: React.FC = () => {
     } else if (tab === 'dashboard' || tab === 'assistant') {
       setActiveView('workspace');
     } else if (tab === 'explore') {
-      setActiveView('landing');
+      setActiveView('explore');
     } else if (tab === 'archive') {
       setActiveView('archive');
     }
@@ -594,6 +595,7 @@ export const App: React.FC = () => {
         <SubPlannerBar
           trip={trip}
           isMapView={isMapView}
+          isGenerating={isAIGenerating}
           onToggleMapView={handleToggleMapView}
           onEditTripDetails={() => setIsNewTripModalOpen(true)}
           onBack={() => {
@@ -621,6 +623,15 @@ export const App: React.FC = () => {
               setActiveTab('dashboard');
               setActiveView('workspace');
             }}
+          />
+        ) : activeView === 'explore' ? (
+          <ExploreView 
+            onSelectTrip={(selectedTrip) => {
+              setTrip(selectedTrip);
+              setHasGeneratedItinerary(true);
+              setActiveTab('dashboard');
+              setActiveView('workspace');
+            }} 
           />
         ) : activeView === 'archive' ? (
           <ArchiveView
