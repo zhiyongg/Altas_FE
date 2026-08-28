@@ -6,7 +6,7 @@ import { currencySymbol } from '../currency';
 // typically a different port than Vite (see the "running both" note at the
 // bottom of this file), so this can't be a relative path unless you add a
 // Vite proxy for it.
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
+const API_BASE = 'http://localhost:8000';
 
 interface ChangeAccommodationModalProps {
   isOpen: boolean;
@@ -14,13 +14,14 @@ interface ChangeAccommodationModalProps {
   onSelectStay: (stay: StayOption) => void;
   // Search context the backend needs to actually query StayAPI. Wire these
   // up from your trip state (the same dest/checkin/checkout the itinerary
-  // was generated with).
-  destId: string;
+  // was generated with). destId is nullable because it's only known once
+  // the initial itinerary has come back with at least one hotel.
+  destId: string | null;
   checkin: string;
   checkout: string;
   adults?: number;
   rooms?: number;
-  children?: number;
+  childrenCount?: number;
 }
 
 export const ChangeAccommodationModal: React.FC<ChangeAccommodationModalProps> = ({
@@ -32,7 +33,7 @@ export const ChangeAccommodationModal: React.FC<ChangeAccommodationModalProps> =
   checkout,
   adults = 2,
   rooms = 1,
-  children = 0,
+  childrenCount = 0,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<'rating' | 'price' | 'featured'>('featured');
@@ -44,6 +45,10 @@ export const ChangeAccommodationModal: React.FC<ChangeAccommodationModalProps> =
 
   useEffect(() => {
     if (!isOpen) return;
+    if (!destId) {
+      setError('No hotel search details available for this trip yet — try regenerating the itinerary.');
+      return;
+    }
 
     const controller = new AbortController();
     setIsLoading(true);
@@ -59,7 +64,7 @@ export const ChangeAccommodationModal: React.FC<ChangeAccommodationModalProps> =
         checkout,
         adults,
         rooms,
-        children,
+        children: childrenCount, // backend field is still named "children"
       }),
     })
       .then((res) => {
@@ -73,7 +78,7 @@ export const ChangeAccommodationModal: React.FC<ChangeAccommodationModalProps> =
       .finally(() => setIsLoading(false));
 
     return () => controller.abort();
-  }, [isOpen, destId, checkin, checkout, adults, rooms, children]);
+  }, [isOpen, destId, checkin, checkout, adults, rooms, childrenCount]);
 
   if (!isOpen) return null;
 

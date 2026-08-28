@@ -156,6 +156,7 @@ export interface StayOption {
   stay_schedule: StaySchedule;
   selected_room: RoomOption;
   available_rooms: RoomOption[];
+}
 
 export interface ActivityOption {
   id: string;
