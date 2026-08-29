@@ -137,6 +137,9 @@ export const App: React.FC = () => {
   // Switch Flight
   const handleSelectFlight = (flight: FlightOption) => {
     setTrip((prev) => {
+      const newFlightPricePerPax = flight.price;
+      const newFlightsTotal = newFlightPricePerPax * prev.travelersCount;
+
       const updatedDays = prev.days.map((day) => ({
         ...day,
         items: day.items.map((item) => {
@@ -144,10 +147,22 @@ export const App: React.FC = () => {
             return {
               ...item,
               title: `Arrival via ${flight.airline}`,
-              subtitle: `${flight.flightCode} • ${flight.from} to ${trip.destination.split(',')[0]}`,
+              subtitle: `${flight.flightCode} • ${flight.from} to ${prev.destination.split(',')[0]}`,
               time: flight.arriveTime,
               bookingRef: `${flight.flightCode.slice(0, 2)}-${Math.floor(1000 + Math.random() * 9000)}`,
               terminal: 'T1',
+              flightDetails: item.flightDetails
+                ? {
+                    ...item.flightDetails,
+                    price: newFlightPricePerPax,
+                    carrier: flight.airline,
+                    flightNumber: flight.flightCode,
+                    depAirport: flight.from,
+                    arrTime: flight.arriveTime,
+                    depTime: flight.departTime,
+                    currency: item.flightDetails.currency || 'USD',
+                  }
+                : undefined,
             };
           }
           return item;
@@ -159,11 +174,9 @@ export const App: React.FC = () => {
         days: updatedDays,
         costs: {
           ...prev.costs,
-          flights: Math.round(flight.price * 150),
-          usdEstimate:
-            prev.costs.activities / 150 +
-            prev.costs.accommodation / 150 +
-            flight.price,
+          flights: newFlightsTotal,
+          // Estimated total = hotel + flights only (activities excluded from total)
+          usdEstimate: prev.costs.accommodation + newFlightsTotal,
         },
       };
     });
@@ -213,11 +226,8 @@ export const App: React.FC = () => {
         costs: {
           ...prev.costs,
           accommodation: newAccomTotal,
-          // NOTE: still assumes activities/flights share the new hotel's
-          // currency — a real FX rate is needed if that's not guaranteed.
-          usdEstimate:
-            (prev.costs.activities + newAccomTotal) / 150 +
-            prev.costs.flights / 150,
+          // Estimated total = hotel + flights only (activities excluded from total)
+          usdEstimate: newAccomTotal + prev.costs.flights,
         },
       };
     });
@@ -266,8 +276,8 @@ export const App: React.FC = () => {
         days: updatedDays,
         costs: {
           ...prev.costs,
+          // Activity cost tracked in data model but NOT included in estimated total
           activities: prev.costs.activities + 6000,
-          usdEstimate: prev.costs.usdEstimate + 40,
         },
       };
     });
@@ -792,8 +802,12 @@ export const App: React.FC = () => {
           flights:
             (outboundDetails.price + returnDetails.price) * travelersCount,
           currency: apiData.cost_breakdown?.currency || 'USD',
+          // Estimated total = hotel + flights only (activities excluded from total)
           usdEstimate:
-            apiData.trip_overview?.total_estimated_budget?.amount || budget,
+            (hotelDetails.totalPrice ||
+              apiData.cost_breakdown?.food_dining ||
+              400) +
+            (outboundDetails.price + returnDetails.price) * travelersCount,
         },
         members: Array.from({ length: travelersCount }).map((_, i) => ({
           id: `member-${i}`,
