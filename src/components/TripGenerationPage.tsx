@@ -30,9 +30,14 @@ export const TripGenerationPage: React.FC<TripGenerationPageProps> = ({
   const budgetError = budgetTouched && budget < 100;
 
   const availableVibes: TravelVibe[] = [
-    'relaxed',
-    'moderate',
-    'packed'
+    'culture',
+    'scenery',
+    'food',
+    'shopping',
+    'entertainment',
+    'adventure',
+    'wellness',
+    'city'
   ];
 
   const tripImages: Record<string, string> = {
@@ -43,7 +48,9 @@ export const TripGenerationPage: React.FC<TripGenerationPageProps> = ({
   };
 
   const toggleVibe = (vibe: TravelVibe) => {
-    setSelectedVibes([vibe]); // Enforce single selection for pacing style
+    setSelectedVibes(prev => 
+      prev.includes(vibe) ? prev.filter(v => v !== vibe) : [...prev, vibe]
+    );
   };
 
   const handleGenerate = (e: React.FormEvent) => {

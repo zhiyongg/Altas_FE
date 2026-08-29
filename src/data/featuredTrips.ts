@@ -13,7 +13,7 @@ export const featuredTrips: Trip[] = [
     dates: 'Oct 10 - Oct 15, 2025',
     travelersCount: 2,
     budget: 2500,
-    vibes: ['packed'] as TravelVibe[],
+    vibes: ['city', 'culture'] as TravelVibe[],
     costs: { activities: 800, accommodation: 1000, flights: 700, currency: 'USD', usdEstimate: 2500 },
     members: defaultMembers,
     days: [
@@ -149,7 +149,7 @@ export const featuredTrips: Trip[] = [
     dates: 'Nov 12 - Nov 18, 2025',
     travelersCount: 2,
     budget: 2200,
-    vibes: ['relaxed'] as TravelVibe[],
+    vibes: ['culture', 'scenery'] as TravelVibe[],
     costs: { activities: 400, accommodation: 1200, flights: 600, currency: 'USD', usdEstimate: 2200 },
     members: defaultMembers,
     days: [
@@ -249,7 +249,7 @@ export const featuredTrips: Trip[] = [
     dates: 'Sep 20 - Sep 26, 2025',
     travelersCount: 2,
     budget: 1900,
-    vibes: ['moderate'] as TravelVibe[],
+    vibes: ['culture', 'shopping'] as TravelVibe[],
     costs: { activities: 500, accommodation: 800, flights: 600, currency: 'USD', usdEstimate: 1900 },
     members: defaultMembers,
     days: [
@@ -349,7 +349,7 @@ export const featuredTrips: Trip[] = [
     dates: 'Dec 05 - Dec 11, 2025',
     travelersCount: 2,
     budget: 3200,
-    vibes: ['moderate'] as TravelVibe[],
+    vibes: ['city', 'culture', 'shopping'] as TravelVibe[],
     costs: { activities: 900, accommodation: 1500, flights: 800, currency: 'USD', usdEstimate: 3200 },
     members: defaultMembers,
     days: [
