@@ -743,6 +743,17 @@ export const App: React.FC = () => {
                     ? returnDetails
                     : outboundDetails
                   : undefined,
+              transitToNext: item.transit_to_next
+                ? {
+                    type: item.transit_to_next.mode === 'walk' ? 'walk'
+                        : item.transit_to_next.mode === 'train' ? 'train'
+                        : item.transit_to_next.mode === 'taxi' ? 'taxi'
+                        : 'subway',
+                    description: item.transit_to_next.description || '',
+                    duration: item.transit_to_next.duration,
+                    distance: item.transit_to_next.distance,
+                  }
+                : undefined,
             };
           });
 
