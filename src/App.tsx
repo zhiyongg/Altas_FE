@@ -15,6 +15,35 @@ import { EditActivityModal } from './components/EditActivityModal';
 import { NewTripModal } from './components/NewTripModal';
 import { ArchiveView } from './components/ArchiveView';
 
+const API_BASE_URL = 'http://127.0.0.1:8001';
+
+const mapChatItineraryToTrip = (itinerary: any, currentTrip: Trip): Trip => ({
+  ...currentTrip,
+  destination: itinerary.destination || currentTrip.destination,
+  days: (itinerary.days || []).map((day: any, dayIndex: number) => ({
+    dayNumber: Number(day.day ?? dayIndex) + 1,
+    dateLabel: `Day ${Number(day.day ?? dayIndex) + 1} • ${day.date || ''}`,
+    items: (day.schedule || []).map((entry: any, itemIndex: number): TimelineItem => ({
+      id: `chat-${day.day ?? dayIndex}-${itemIndex}-${Date.now()}`,
+      time: entry.time || '12:00',
+      type: entry.kind === 'meal' ? 'dining' : entry.kind === 'hotel' ? 'hotel' : entry.kind === 'flight' ? 'flight' : 'activity',
+      tag: entry.kind ? String(entry.kind).charAt(0).toUpperCase() + String(entry.kind).slice(1) : 'Activity',
+      title: entry.name || entry.location?.name || 'Planned activity',
+      subtitle: entry.location?.address || entry.location?.name || '',
+      details: entry.rating ? `Rating: ${entry.rating}` : undefined,
+      mapCoords: entry.location
+        ? { x: 0, y: 0, lat: entry.location.latitude, lng: entry.location.longitude }
+        : undefined,
+      transitToNext: entry.transit_to_next
+        ? {
+            type: entry.transit_to_next.mode === 'walk' ? 'walk' : entry.transit_to_next.mode === 'train' ? 'train' : 'bus',
+            description: entry.transit_to_next.description || '',
+          }
+        : undefined,
+    })),
+  })),
+});
+
 export const App: React.FC = () => {
   const emptyTrip: Trip = {
     id: '',
@@ -48,6 +77,7 @@ export const App: React.FC = () => {
   // AI Chat state
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [isAIGenerating, setIsAIGenerating] = useState(false);
+  const [chatSessionId, setChatSessionId] = useState('testing');
 
   // Handle Tab changes
   const handleSelectTab = (tab: NavTab) => {
@@ -230,7 +260,7 @@ export const App: React.FC = () => {
   };
 
   // AI Chat & Intent Processing
-  const handleSendMessage = (userText: string) => {
+  const handleSendMessage = async (userText: string) => {
     const newMsg: ChatMessage = {
       id: `user-${Date.now()}`,
       sender: 'user',
@@ -241,73 +271,49 @@ export const App: React.FC = () => {
     setChatMessages((prev) => [...prev, newMsg]);
     setIsAIGenerating(true);
 
-    setTimeout(() => {
-      const textLower = userText.toLowerCase();
-      let aiReply = '';
-      let suggestions: string[] = [];
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: userText,
+          session_id: chatSessionId,
+          trip_config: { session_id: chatSessionId },
+        }),
+      });
 
-      if (textLower.includes('coffee') || textLower.includes('shimokitazawa') || textLower.includes('swap')) {
-        // Swap or add coffee
-        const coffeeItem: TimelineItem = {
-          id: `item-coffee-${Date.now()}`,
-          time: '09:30',
-          type: 'dining',
-          tag: 'Cafe & Culture',
-          title: 'Specialty Coffee Tour • Shimokitazawa',
-          subtitle: 'Artisanal pour-overs and vintage vinyl coffee shops.',
-          details: 'Recommended spots: Bear Pond Espresso & Coffea Exprectus.',
-          transitToNext: {
-            type: 'subway',
-            description: 'Odakyu Line --- 12 mins ---> Shinjuku',
-          },
-        };
+      if (!response.ok) throw new Error(`Chat API error: ${response.status}`);
+      const data = await response.json();
 
-        setTrip((prev) => {
-          const updatedDays = [...prev.days];
-          updatedDays[0].items = [coffeeItem, ...updatedDays[0].items.filter((i) => i.tag !== 'Morning')];
-          return { ...prev, days: updatedDays };
-        });
-
-        aiReply = `Done! I've scheduled the Shimokitazawa Specialty Coffee Tour for morning on Day 1, with transit connection back to Shinjuku.`;
-        suggestions = ['Find ramen for dinner nearby', 'View Day 1 on map', 'Add thrift shopping in Shimokitazawa'];
-      } else if (textLower.includes('flight') || textLower.includes('airline')) {
-        aiReply = `Here are alternative direct and connecting flights for Tokyo. Opening the flight replacer now...`;
-        setIsFlightModalOpen(true);
-      } else if (textLower.includes('hotel') || textLower.includes('stay') || textLower.includes('accommodation')) {
-        aiReply = `Opening our curated selection of verified Tokyo stays and ryokans...`;
-        setIsAccommodationModalOpen(true);
-      } else if (textLower.includes('activity') || textLower.includes('museum') || textLower.includes('ramen') || textLower.includes('add')) {
-        aiReply = `I've opened the activity finder with nearby culinary spots and cultural landmarks.`;
-        setIsActivityModalOpen(true);
-      } else if (textLower.includes('split') || textLower.includes('pay') || textLower.includes('bill') || textLower.includes('cost')) {
-        aiReply = `Taking you to the group payment breakdown where you can divide expenses among all 4 travelers!`;
-        setActiveView('finalize_pay');
-      } else {
-        aiReply = `I've analyzed your itinerary constraints. Tokyo's transit flows smoothly with this pacing, leaving approx 1.5 hours buffer between major landmarks.`;
-        suggestions = [
-          'Add teamLab Planets to Day 3',
-          'Switch to boutique Ryokan in Asakusa',
-          'Calculate group bill split',
-        ];
+      if (data.itinerary?.days) {
+        setTrip((prev) => mapChatItineraryToTrip(data.itinerary, prev));
       }
 
-      const aiMsgObj: ChatMessage = {
+      setChatMessages((prev) => [...prev, {
         id: `ai-${Date.now()}`,
         sender: 'ai',
-        text: aiReply,
+        text: data.response || 'I updated your itinerary.',
         timestamp: 'Just now',
-        suggestionPills: suggestions.length > 0 ? suggestions : undefined,
-      };
-
-      setChatMessages((prev) => [...prev, aiMsgObj]);
+      }]);
+    } catch (error) {
+      console.error('Error processing chat message:', error);
+      setChatMessages((prev) => [...prev, {
+        id: `ai-error-${Date.now()}`,
+        sender: 'ai',
+        text: 'I could not reach the itinerary chat service. Make sure testing_api.py is running on port 8001.',
+        timestamp: 'Just now',
+      }]);
+    } finally {
       setIsAIGenerating(false);
-    }, 600);
+    }
   };
 
   // Create new trip
   const handleCreateNewTrip = async (newTripData: Partial<Trip>) => {
     setIsAIGenerating(true);
     setActiveView('workspace');
+    const nextSessionId = `trip-${Date.now()}`;
+    setChatSessionId(nextSessionId);
     setTrip({
       ...emptyTrip,
       destination: newTripData.destination || 'Kota Kinabalu, Malaysia',
@@ -324,12 +330,15 @@ export const App: React.FC = () => {
       const userRequest = `Plan a trip to ${destination}. Dates: ${dates}. Budget: $${budget} per pax. Travelers: ${travelersCount}. Vibes: ${vibes}.`;
       const customMessages = newTripData.specialRequests || "Please make sure to add an activity to visit a cafe to unwind after the flight on day 1.";
       
-      const response = await fetch('http://127.0.0.1:8000/api/generate', {
+      const response = await fetch(`${API_BASE_URL}/api/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           user_request: userRequest,
-          custom_messages: customMessages
+          custom_messages: customMessages,
+          trip_config: {
+            session_id: nextSessionId,
+          },
         }),
       });
 
