@@ -53,7 +53,7 @@ const mapChatItineraryToTrip = (itinerary: any, currentTrip: Trip): Trip => ({
         : undefined,
       transitToNext: entry.transit_to_next
         ? {
-            type: entry.transit_to_next.mode === 'walk' ? 'walk' : entry.transit_to_next.mode === 'train' ? 'train' : 'bus',
+            type: entry.transit_to_next.mode === 'walk' ? 'walk' : entry.transit_to_next.mode === 'train' ? 'train' : entry.transit_to_next.mode === 'taxi' ? 'taxi' : 'subway',
             description: entry.transit_to_next.description || '',
           }
         : undefined,
@@ -690,6 +690,17 @@ export const App: React.FC = () => {
                     ? returnDetails
                     : outboundDetails
                   : undefined,
+              transitToNext: item.transit_to_next
+                ? {
+                    type: item.transit_to_next.mode === 'walk' ? 'walk'
+                        : item.transit_to_next.mode === 'train' ? 'train'
+                        : item.transit_to_next.mode === 'taxi' ? 'taxi'
+                        : 'subway',
+                    description: item.transit_to_next.description || '',
+                    duration: item.transit_to_next.duration,
+                    distance: item.transit_to_next.distance,
+                  }
+                : undefined,
             };
           });
 
