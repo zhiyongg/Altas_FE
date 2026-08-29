@@ -1,10 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Trip,
   TimelineItem,
   ChatMessage,
   FlightOption,
   StayOption,
+  RoomOption,
   ActivityOption,
   NavTab,
 } from './types';
@@ -156,7 +157,13 @@ export const App: React.FC = () => {
   };
 
   // Switch Accommodation
-  const handleSelectAccommodation = (stay: StayOption) => {
+  //
+  // BUG FIX: ChangeAccommodationModal now calls onSelectStay(stay, room) —
+  // passing the SPECIFIC room the user picked, which can differ from
+  // stay.selected_room if they expanded "View room options" and chose a
+  // different one. This used to only accept `stay` and always priced off
+  // stay.selected_room, silently ignoring the room the user actually chose.
+  const handleSelectAccommodation = (stay: StayOption, room: RoomOption) => {
     const locationLabel =
       [stay.address, stay.city].filter(Boolean).join(', ') || stay.name;
 
@@ -176,7 +183,7 @@ export const App: React.FC = () => {
         }),
       }));
 
-      const newAccomTotal = stay.selected_room.total_price;
+      const newAccomTotal = room.total_price;
       return {
         ...prev,
         days: updatedDays,
@@ -195,9 +202,9 @@ export const App: React.FC = () => {
     const confirmMsg: ChatMessage = {
       id: `msg-${Date.now()}`,
       sender: 'ai',
-      text: `Upgraded your stay to ${stay.name} (${locationLabel}). Total accommodation updated to ${currencySymbol(
-        stay.selected_room.currency,
-      )}${stay.selected_room.total_price.toLocaleString()}.`,
+      text: `Upgraded your stay to ${stay.name} (${locationLabel}) — ${room.room_name}. Total accommodation updated to ${currencySymbol(
+        room.currency,
+      )}${room.total_price.toLocaleString()}.`,
       timestamp: 'Just now',
     };
     setChatMessages((prev) => [...prev, confirmMsg]);
@@ -462,7 +469,7 @@ export const App: React.FC = () => {
       // Accommodation" can re-search the same destination/dates later.
       // destId stays null if the agent didn't return one (e.g. it fell
       // back to a placeholder hotel) — the modal handles that gracefully.
-      setHotelSearchParams({
+      const newHotelSearchParams = {
         destId: primaryHotel?.dest_id ?? null,
         checkin: primaryHotel?.stay_schedule?.check_in_date || '',
         checkout: primaryHotel?.stay_schedule?.check_out_date || '',
@@ -471,7 +478,8 @@ export const App: React.FC = () => {
         // the user to choose room count directly.
         rooms: Math.max(1, Math.ceil(travelersCount / 2)),
         children: 0,
-      });
+      };
+      setHotelSearchParams(newHotelSearchParams);
 
       const outboundFlightData = apiData.flights
         ? apiData.flights.find((f: any) => f.direction === 'outbound') ||
@@ -738,6 +746,44 @@ export const App: React.FC = () => {
     }
   };
 
+  // Restore straight back into Finalize & Pay after returning from Stripe.
+  // Redirecting to Stripe's hosted checkout is a full page navigation away
+  // from this app, which wipes ALL in-memory React state on the way back —
+  // not just `trip`. This used to only restore `trip`, leaving
+  // `hotelSearchParams` reset to its default { destId: null, ... }, which
+  // is exactly why "Change Accommodation" started failing with "No hotel
+  // search details available" right after a payment redirect: the restored
+  // trip looked fine, but the separate hotelSearchParams state it depends
+  // on had silently gone back to null. FinalizePayView now saves both
+  // pieces together before redirecting to Stripe (see its handlePay) — this
+  // restores both back into state.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (!params.get('session_id')) return;
+
+    const saved = sessionStorage.getItem('pendingPaymentTrip');
+    if (!saved) return;
+
+    try {
+      const parsed: {
+        trip: Trip;
+        hotelSearchParams?: typeof hotelSearchParams;
+      } = JSON.parse(saved);
+      setTrip(parsed.trip);
+      if (parsed.hotelSearchParams) {
+        setHotelSearchParams(parsed.hotelSearchParams);
+      }
+      setHasGeneratedItinerary(true);
+      setActiveTab('dashboard');
+      setActiveView('finalize_pay');
+    } catch {
+      // Corrupt/stale sessionStorage value — ignore and let the app fall
+      // through to whatever view it would normally show.
+    } finally {
+      sessionStorage.removeItem('pendingPaymentTrip');
+    }
+  }, []);
+
   return (
     <div className="min-h-screen flex flex-col bg-[#f8f9fa] text-[#191c1d] font-sans antialiased selection:bg-[#d8e2ff] selection:text-[#001a42]">
       {/* Top Main Navigation Bar */}
@@ -797,6 +843,7 @@ export const App: React.FC = () => {
         ) : activeView === 'finalize_pay' ? (
           <FinalizePayView
             trip={trip}
+            hotelSearchParams={hotelSearchParams}
             onBack={() => setActiveView('workspace')}
           />
         ) : isMapView ? (
