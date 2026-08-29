@@ -63,20 +63,14 @@ const mapChatItineraryToTrip = (itinerary: any, currentTrip: Trip): Trip => {
     travelersCount: normalized.travelers_count ?? normalized.travelersCount ?? currentTrip.travelersCount,
     budget: normalized.budget ?? currentTrip.budget,
     vibes: normalized.vibes || currentTrip.vibes,
-    days: itineraryDays.map((day: any, dayIndex: number) => ({
-      dayNumber: Number(day.day ?? dayIndex) + 1,
-      dateLabel: `Day ${Number(day.day ?? dayIndex) + 1} • ${day.date || ''}`,
-      items: (day.schedule || []).map((entry: any, itemIndex: number): TimelineItem => ({
+    days: itineraryDays.map((day: any, dayIndex: number) => {
+      
+      // 1. Map the new schedule from the chat response
+      let newItems = (day.schedule || []).map((entry: any, itemIndex: number): TimelineItem => ({
         id: `chat-${day.day ?? dayIndex}-${itemIndex}-${Date.now()}`,
         time: entry.time || '12:00',
-        type:
-          entry.kind === 'meal'
-            ? 'dining'
-            : entry.kind === 'hotel'
-              ? 'hotel'
-              : entry.kind === 'flight'
-                ? 'flight'
-                : 'activity',
+        // Ensure the new "hotel_checkin" kind maps properly to the frontend's hotel type
+        type: entry.kind === 'meal' ? 'dining' : (entry.kind === 'hotel' || entry.kind === 'hotel_checkin') ? 'hotel' : entry.kind === 'flight' ? 'flight' : 'activity',
         tag: entry.kind ? String(entry.kind).charAt(0).toUpperCase() + String(entry.kind).slice(1) : 'Activity',
         title: entry.name || entry.location?.name || 'Planned activity',
         subtitle: entry.location?.address || entry.location?.name || '',
@@ -87,20 +81,49 @@ const mapChatItineraryToTrip = (itinerary: any, currentTrip: Trip): Trip => {
         transitToNext: entry.transit_to_next
           ? {
               type:
-                entry.transit_to_next.mode === 'walk'
-                  ? 'walk'
-                  : entry.transit_to_next.mode === 'train' || entry.transit_to_next.mode === 'subway'
-                    ? 'train'
-                    : entry.transit_to_next.mode === 'drive' || entry.transit_to_next.mode === 'car'
-                      ? 'drive'
-                      : entry.transit_to_next.mode === 'taxi'
-                        ? 'taxi'
-                        : 'bus',
+                entry.transit_to_next.mode === 'walk' ? 'walk'
+                  : entry.transit_to_next.mode === 'train' || entry.transit_to_next.mode === 'subway' ? 'train'
+                  : entry.transit_to_next.mode === 'drive' || entry.transit_to_next.mode === 'car' ? 'drive'
+                  : entry.transit_to_next.mode === 'taxi' ? 'taxi'
+                  : 'bus',
               description: entry.transit_to_next.description || '',
             }
           : undefined,
-      })),
-    })),
+      }));
+
+      // ── FIX: Preserve & Re-inject Flights and Hotel Metadata ──
+      const existingDay = currentTrip.days[dayIndex];
+      if (existingDay) {
+        // Re-inject flights from the previous state back into the new timeline
+        const existingFlights = existingDay.items.filter(item => item.type === 'flight');
+        existingFlights.forEach(flight => {
+          if (flight.flightDetails?.direction === 'return') {
+            newItems.push(flight);
+          } else {
+            newItems.unshift(flight);
+          }
+        });
+
+        // Copy over the rich hotelDetails (pricing, room type) so the new hotel nodes don't lose their data
+        const existingHotelMetadata = existingDay.items.find(item => item.hotelDetails)?.hotelDetails;
+        if (existingHotelMetadata) {
+          newItems.forEach(item => {
+            if (item.type === 'hotel') {
+              item.hotelDetails = existingHotelMetadata;
+            }
+          });
+        }
+      }
+
+      // Sort items chronologically by their HH:MM time string to ensure injected flights fit in perfectly
+      newItems.sort((a: any, b: any) => String(a.time).localeCompare(String(b.time)));
+
+      return {
+        dayNumber: Number(day.day ?? dayIndex) + 1,
+        dateLabel: `Day ${Number(day.day ?? dayIndex) + 1} • ${day.date || ''}`,
+        items: newItems,
+      };
+    }),
   };
 };
 
