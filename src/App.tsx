@@ -34,32 +34,75 @@ import { ExploreView } from './components/ExploreView';
 
 const API_BASE_URL = 'http://127.0.0.1:8000';
 
-const mapChatItineraryToTrip = (itinerary: any, currentTrip: Trip): Trip => ({
-  ...currentTrip,
-  destination: itinerary.destination || currentTrip.destination,
-  days: (itinerary.days || []).map((day: any, dayIndex: number) => ({
-    dayNumber: Number(day.day ?? dayIndex) + 1,
-    dateLabel: `Day ${Number(day.day ?? dayIndex) + 1} • ${day.date || ''}`,
-    items: (day.schedule || []).map((entry: any, itemIndex: number): TimelineItem => ({
-      id: `chat-${day.day ?? dayIndex}-${itemIndex}-${Date.now()}`,
-      time: entry.time || '12:00',
-      type: entry.kind === 'meal' ? 'dining' : entry.kind === 'hotel' ? 'hotel' : entry.kind === 'flight' ? 'flight' : 'activity',
-      tag: entry.kind ? String(entry.kind).charAt(0).toUpperCase() + String(entry.kind).slice(1) : 'Activity',
-      title: entry.name || entry.location?.name || 'Planned activity',
-      subtitle: entry.location?.address || entry.location?.name || '',
-      details: entry.rating ? `Rating: ${entry.rating}` : undefined,
-      mapCoords: entry.location
-        ? { x: 0, y: 0, lat: entry.location.latitude, lng: entry.location.longitude }
-        : undefined,
-      transitToNext: entry.transit_to_next
-        ? {
-            type: entry.transit_to_next.mode === 'walk' ? 'walk' : entry.transit_to_next.mode === 'train' ? 'train' : 'bus',
-            description: entry.transit_to_next.description || '',
-          }
-        : undefined,
+const normalizeChatItinerary = (payload: any): any | null => {
+  if (!payload) return null;
+
+  if (Array.isArray(payload)) return { days: payload };
+  if (payload.days) return payload;
+  if (payload.daily_itinerary) {
+    const daily = payload.daily_itinerary;
+    if (Array.isArray(daily)) return { days: daily };
+    if (daily.days) return daily;
+  }
+  if (payload.itinerary) return normalizeChatItinerary(payload.itinerary);
+  if (payload.trip && payload.trip.itinerary) return normalizeChatItinerary(payload.trip.itinerary);
+  if (payload.trip && payload.trip.days) return payload.trip;
+
+  return null;
+};
+
+const mapChatItineraryToTrip = (itinerary: any, currentTrip: Trip): Trip => {
+  const normalized = normalizeChatItinerary(itinerary) || { days: [] };
+  const itineraryDays = Array.isArray(normalized.days) ? normalized.days : [];
+
+  return {
+    ...currentTrip,
+    title: normalized.title || normalized.trip_overview?.title || currentTrip.title,
+    destination: normalized.destination || currentTrip.destination,
+    dates: normalized.dates || currentTrip.dates,
+    travelersCount: normalized.travelers_count ?? normalized.travelersCount ?? currentTrip.travelersCount,
+    budget: normalized.budget ?? currentTrip.budget,
+    vibes: normalized.vibes || currentTrip.vibes,
+    days: itineraryDays.map((day: any, dayIndex: number) => ({
+      dayNumber: Number(day.day ?? dayIndex) + 1,
+      dateLabel: `Day ${Number(day.day ?? dayIndex) + 1} • ${day.date || ''}`,
+      items: (day.schedule || []).map((entry: any, itemIndex: number): TimelineItem => ({
+        id: `chat-${day.day ?? dayIndex}-${itemIndex}-${Date.now()}`,
+        time: entry.time || '12:00',
+        type:
+          entry.kind === 'meal'
+            ? 'dining'
+            : entry.kind === 'hotel'
+              ? 'hotel'
+              : entry.kind === 'flight'
+                ? 'flight'
+                : 'activity',
+        tag: entry.kind ? String(entry.kind).charAt(0).toUpperCase() + String(entry.kind).slice(1) : 'Activity',
+        title: entry.name || entry.location?.name || 'Planned activity',
+        subtitle: entry.location?.address || entry.location?.name || '',
+        details: entry.rating ? `Rating: ${entry.rating}` : undefined,
+        mapCoords: entry.location
+          ? { x: 0, y: 0, lat: entry.location.latitude, lng: entry.location.longitude }
+          : undefined,
+        transitToNext: entry.transit_to_next
+          ? {
+              type:
+                entry.transit_to_next.mode === 'walk'
+                  ? 'walk'
+                  : entry.transit_to_next.mode === 'train' || entry.transit_to_next.mode === 'subway'
+                    ? 'train'
+                    : entry.transit_to_next.mode === 'drive' || entry.transit_to_next.mode === 'car'
+                      ? 'drive'
+                      : entry.transit_to_next.mode === 'taxi'
+                        ? 'taxi'
+                        : 'bus',
+              description: entry.transit_to_next.description || '',
+            }
+          : undefined,
+      })),
     })),
-  })),
-});
+  };
+};
 
 
 export const App: React.FC = () => {
@@ -454,8 +497,18 @@ export const App: React.FC = () => {
       if (!response.ok) throw new Error(`Chat API error: ${response.status}`);
       const data = await response.json();
 
-      if (data.itinerary?.days) {
-        setTrip((prev) => mapChatItineraryToTrip(data.itinerary, prev));
+      const updatedItinerary = normalizeChatItinerary(data);
+      if (updatedItinerary) {
+        setTrip((prev) => {
+          const refreshed = mapChatItineraryToTrip(updatedItinerary, prev);
+          return {
+            ...refreshed,
+            days: refreshed.days.length > 0 ? refreshed.days : prev.days,
+          };
+        });
+        setHasGeneratedItinerary(true);
+        setActiveDayIndex(0);
+        setActiveView('workspace');
       }
 
       /*
