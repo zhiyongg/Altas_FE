@@ -7,6 +7,7 @@ interface SubPlannerBarProps {
   onToggleMapView: (isMap: boolean) => void;
   onEditTripDetails?: () => void;
   onBack?: () => void;
+  isGenerating?: boolean;
 }
 
 export const SubPlannerBar: React.FC<SubPlannerBarProps> = ({
@@ -15,6 +16,7 @@ export const SubPlannerBar: React.FC<SubPlannerBarProps> = ({
   onToggleMapView,
   onEditTripDetails,
   onBack,
+  isGenerating = false,
 }) => {
   return (
     <div className="sticky top-16 z-40 bg-[#f3f4f5] border-b border-[#e1e3e4] px-4 md:px-12 py-3.5 flex flex-wrap justify-between items-center w-full gap-3 shadow-xs">
@@ -54,9 +56,15 @@ export const SubPlannerBar: React.FC<SubPlannerBarProps> = ({
         <button
           role="switch"
           aria-checked={isMapView}
-          onClick={() => onToggleMapView(!isMapView)}
-          className={`w-12 h-6 flex items-center rounded-full p-0.5 cursor-pointer transition-colors duration-200 ease-in-out focus:outline-none ${
-            isMapView ? 'bg-[#0058be]' : 'bg-[#e1e3e4]'
+          onClick={() => !isGenerating && onToggleMapView(!isMapView)}
+          disabled={isGenerating}
+          title={isGenerating ? "Map view will be available once itinerary generation is complete" : "Toggle Map View"}
+          className={`w-12 h-6 flex items-center rounded-full p-0.5 transition-colors duration-200 ease-in-out focus:outline-none ${
+            isGenerating 
+              ? 'bg-[#e1e3e4] opacity-50 cursor-not-allowed'
+              : isMapView 
+                ? 'bg-[#0058be] cursor-pointer' 
+                : 'bg-[#e1e3e4] cursor-pointer'
           }`}
         >
           <div

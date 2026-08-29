@@ -7,7 +7,7 @@ export const initialTokyoTrip: Trip = {
   dates: 'Oct 10 - Oct 15',
   travelersCount: 1,
   budget: 2500,
-  vibes: ['Chill', 'Foodie', 'Culture'],
+  vibes: ['culture', 'food', 'city'],
   specialRequests: 'Arriving at 2:30 PM, love ramen and coffee in Shimokitazawa, need boutique vibe hotels.',
   costs: {
     activities: 48000,

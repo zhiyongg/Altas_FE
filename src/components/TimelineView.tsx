@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
+import { Reorder, useDragControls } from 'motion/react';
 import { Trip, TimelineItem } from '../types';
+import { isFixedItem } from '../utils/recalculateSchedule';
 import { TimelineLoadingView } from './TimelineLoadingView';
 
 interface TimelineViewProps {
@@ -11,9 +13,320 @@ interface TimelineViewProps {
   onOpenChangeHotel: () => void;
   onEditItem: (item: TimelineItem) => void;
   onDeleteItem: (itemId: string) => void;
+  onReorderItems: (newItems: TimelineItem[]) => void;
   onProceedToSplitPay: () => void;
   isGenerating?: boolean;
 }
+
+const getCategoryIcon = (type: string, tag: string) => {
+  switch (type) {
+    case 'flight':
+      return 'flight_land';
+    case 'hotel':
+      return 'hotel';
+    case 'dining':
+      return 'local_dining';
+    case 'nightlife':
+      return 'nightlife';
+    case 'culture':
+      return 'park';
+    case 'shopping':
+      return 'shopping_bag';
+    case 'activity':
+      return 'local_activity';
+    default:
+      if (tag.toLowerCase().includes('market')) return 'storefront';
+      return 'location_on';
+  }
+};
+
+// Alternating segments of the day: fixed anchors (flight/hotel) and draggable runs
+type TimelineSegment =
+  | { kind: 'fixed'; item: TimelineItem }
+  | { kind: 'run'; items: TimelineItem[]; startIndex: number };
+
+const buildSegments = (items: TimelineItem[]): TimelineSegment[] => {
+  const segments: TimelineSegment[] = [];
+  items.forEach((item, idx) => {
+    if (isFixedItem(item)) {
+      segments.push({ kind: 'fixed', item });
+    } else {
+      const last = segments[segments.length - 1];
+      if (last && last.kind === 'run') {
+        last.items.push(item);
+      } else {
+        segments.push({ kind: 'run', items: [item], startIndex: idx });
+      }
+    }
+  });
+  return segments;
+};
+
+interface TimelineItemCardProps {
+  item: TimelineItem;
+  isTransitExpanded: boolean;
+  onToggleTransit: (itemId: string) => void;
+  onEditItem: (item: TimelineItem) => void;
+  onDeleteItem: (itemId: string) => void;
+  onOpenChangeFlight: () => void;
+  onOpenChangeHotel: () => void;
+  dragHandle: React.ReactNode;
+}
+
+// Shared per-item markup (round icon + event card + transit connector),
+// used by both the fixed (static) and draggable render paths.
+const TimelineItemCard: React.FC<TimelineItemCardProps> = ({
+  item,
+  isTransitExpanded,
+  onToggleTransit,
+  onEditItem,
+  onDeleteItem,
+  onOpenChangeFlight,
+  onOpenChangeHotel,
+  dragHandle,
+}) => {
+  const iconName = getCategoryIcon(item.type, item.tag);
+
+  return (
+    <>
+      {/* Round Category Icon on Timeline */}
+      <div className="absolute left-0 top-3 w-12 h-12 bg-[#f3f4f5] rounded-full flex items-center justify-center border-4 border-[#f8f9fa] text-[#727785] group-hover:text-[#0058be] group-hover:border-[#d8e2ff] transition-all shadow-[0_4px_20px_-4px_rgba(0,0,0,0.04)] z-10">
+        <span className="material-symbols-outlined text-[22px]">{iconName}</span>
+      </div>
+
+      {/* Event Card */}
+      <div className="bg-white rounded-2xl p-5 shadow-[0_4px_20px_-4px_rgba(0,0,0,0.04)] group-hover:shadow-[0_8px_30px_-4px_rgba(0,0,0,0.08)] transition-all border border-[#f3f4f5] hover:border-[#adc6ff]/40 flex gap-3 items-start relative">
+        {dragHandle}
+
+        <div className="flex-grow w-full">
+          <div className="flex justify-between items-start mb-2">
+            <div>
+              <span className="inline-block px-2.5 py-0.5 bg-[#f3f4f5] text-[#727785] rounded-full text-xs font-semibold mb-1.5">
+                {item.tag}
+              </span>
+              <h3 className="font-medium text-lg md:text-xl text-[#191c1d] leading-snug">
+                {item.title}
+              </h3>
+              <p className="text-sm text-[#727785] mt-0.5">{item.subtitle}</p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="text-lg md:text-xl text-[#0058be] font-bold tracking-tight">
+                {item.time}
+              </span>
+              <div className="flex items-center opacity-70 group-hover:opacity-100 transition-opacity">
+                <button
+                  onClick={() => onEditItem(item)}
+                  className="text-[#727785] hover:text-[#0058be] hover:bg-[#f3f4f5] p-1.5 rounded-full transition-colors"
+                  title="Edit activity"
+                >
+                  <span className="material-symbols-outlined text-[18px]">edit</span>
+                </button>
+                <button
+                  onClick={() => onDeleteItem(item.id)}
+                  className="text-[#727785] hover:text-[#ba1a1a] hover:bg-[#ffdad6]/40 p-1.5 rounded-full transition-colors"
+                  title="Remove activity"
+                >
+                  <span className="material-symbols-outlined text-[18px]">delete</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Rich Details if available */}
+          {item.details && (
+            <p className="text-xs text-[#424754] bg-[#f8f9fa] p-2.5 rounded-xl mt-2 border border-[#edeeef]">
+              {item.details}
+            </p>
+          )}
+
+          {/* Image Embed if available (e.g. Omoide Yokocho) */}
+          {item.image && (
+            <div className="mt-3.5 h-36 rounded-xl overflow-hidden shadow-xs relative group/img">
+              <img
+                src={item.image}
+                alt={item.title}
+                className="w-full h-full object-cover group-hover/img:scale-105 transition-transform duration-500"
+              />
+              <div className="absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-transparent opacity-0 group-hover/img:opacity-100 transition-opacity flex items-end p-2.5">
+                <span className="text-white text-xs font-medium drop-shadow-sm">
+                  {item.title}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* Rich Flight Card Details */}
+          {item.type === 'flight' && (
+            <div className="mt-3 bg-[#f8f9fa] border border-[#e1e3e4] rounded-xl p-3.5 space-y-2 text-xs">
+              <div className="flex items-center justify-between font-semibold text-[#191c1d]">
+                <div className="flex items-center gap-1.5 text-[#0058be]">
+                  <span className="material-symbols-outlined text-[18px]">flight</span>
+                  <span>{item.flightDetails?.carrier || 'Airline Carrier'} ({item.flightDetails?.flightNumber || 'FLIGHT'})</span>
+                </div>
+                <span className="bg-[#d8e2ff] text-[#001a42] px-2 py-0.5 rounded-full text-[11px]">
+                  {item.flightDetails?.cabin || 'Economy'}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between text-[#424754]">
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-sm text-[#191c1d]">{item.flightDetails?.depTime || item.time}</span>
+                  <span className="font-semibold">{item.flightDetails?.depAirport || 'DEP'}</span>
+                  <span className="material-symbols-outlined text-[16px] text-[#727785]">arrow_forward</span>
+                  <span className="font-semibold">{item.flightDetails?.arrAirport || 'ARR'}</span>
+                  <span className="font-bold text-sm text-[#191c1d]">{item.flightDetails?.arrTime || item.time}</span>
+                </div>
+                {item.flightDetails?.price && (
+                  <span className="font-bold text-[#006c49] text-xs">
+                    {item.flightDetails.currency || '$'}{item.flightDetails.price} / pax
+                  </span>
+                )}
+              </div>
+
+              <div className="pt-2 border-t border-[#e1e3e4] flex items-center justify-between">
+                <span className="text-[11px] text-[#727785]">
+                  Terminal: {item.terminal || 'T1'} • Booking Ref: {item.bookingRef || 'JL-88419'}
+                </span>
+                <button
+                  onClick={onOpenChangeFlight}
+                  className="bg-[#d8e2ff] text-[#001a42] px-3 py-1 rounded-full text-xs font-semibold hover:bg-[#adc6ff] transition-colors flex items-center gap-1 cursor-pointer shadow-2xs"
+                >
+                  <span className="material-symbols-outlined text-[14px]">sync_alt</span>
+                  Change Flight
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Rich Hotel Card Details */}
+          {item.type === 'hotel' && (
+            <div className="mt-3 bg-[#f8f9fa] border border-[#e1e3e4] rounded-xl p-3.5 space-y-2 text-xs">
+              <div className="flex items-center justify-between font-semibold text-[#191c1d]">
+                <div className="flex items-center gap-1.5 text-[#0058be]">
+                  <span className="material-symbols-outlined text-[18px]">hotel</span>
+                  <span>{item.hotelDetails?.name || item.title}</span>
+                </div>
+                {item.hotelDetails?.starRating && (
+                  <div className="flex items-center text-[#e5a900] bg-[#fff8e1] px-2 py-0.5 rounded-full text-[11px] font-bold">
+                    <span>{item.hotelDetails.starRating}★ Hotel</span>
+                  </div>
+                )}
+              </div>
+
+              {item.hotelDetails?.address && (
+                <p className="text-[11px] text-[#727785] flex items-center gap-1">
+                  <span className="material-symbols-outlined text-[14px]">location_on</span>
+                  {item.hotelDetails.address}
+                </p>
+              )}
+
+              <div className="flex flex-wrap gap-2 text-[11px]">
+                <span className="bg-white border border-[#e1e3e4] px-2.5 py-1 rounded-md text-[#424754]">
+                  Room: <strong>{item.hotelDetails?.roomType || 'Standard Deluxe'}</strong>
+                </span>
+                <span className="bg-white border border-[#e1e3e4] px-2.5 py-1 rounded-md text-[#424754]">
+                  Check-in: <strong>{item.hotelDetails?.checkIn || '15:00'}</strong> | Check-out: <strong>{item.hotelDetails?.checkOut || '11:00'}</strong>
+                </span>
+              </div>
+
+              <div className="pt-2 border-t border-[#e1e3e4] flex items-center justify-between">
+                <span className="text-[11px] font-semibold text-[#006c49]">
+                  {item.hotelDetails?.pricePerNight
+                    ? `${item.hotelDetails.currency || '$'}${item.hotelDetails.pricePerNight} / night`
+                    : 'Confirmed Booking'}
+                </span>
+                <div className="flex gap-2">
+                  <button
+                    onClick={onOpenChangeHotel}
+                    className="bg-[#d8e2ff] text-[#001a42] px-3 py-1 rounded-full text-xs font-semibold hover:bg-[#adc6ff] transition-colors flex items-center gap-1 cursor-pointer shadow-2xs"
+                  >
+                    <span className="material-symbols-outlined text-[14px]">sync_alt</span>
+                    Change Hotel
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Transit Detail Connector */}
+      {item.transitToNext && (
+        <div className="relative my-3 pt-1 pb-1">
+          <div className="flex flex-col gap-1.5">
+            <button
+              onClick={() => onToggleTransit(item.id)}
+              className="flex items-center gap-2 text-[#727785] text-xs font-medium bg-[#f3f4f5] hover:bg-[#e7e8e9] hover:text-[#191c1d] px-3.5 py-1.5 rounded-full transition-all cursor-pointer w-fit shadow-2xs group/btn"
+            >
+              <span className="material-symbols-outlined text-[16px] text-[#0058be]">
+                {item.transitToNext.type === 'subway'
+                  ? 'train'
+                  : item.transitToNext.type === 'train'
+                  ? 'train'
+                  : item.transitToNext.type === 'walk'
+                  ? 'directions_walk'
+                  : 'directions_bus'}
+              </span>
+              <span>{item.transitToNext.description}</span>
+              <span className="material-symbols-outlined text-[16px] group-hover/btn:translate-y-0.5 transition-transform">
+                {isTransitExpanded ? 'expand_less' : 'expand_more'}
+              </span>
+            </button>
+
+            {isTransitExpanded && (
+              <div className="bg-white p-3 rounded-xl border border-[#e1e3e4] shadow-xs text-xs text-[#424754] space-y-1.5 animate-in fade-in duration-200">
+                <div className="flex justify-between font-medium">
+                  <span className="text-[#0058be]">Route Navigation</span>
+                  <span className="text-[#006c49]">Optimal Route</span>
+                </div>
+                <p>
+                  • Board from departure platform with IC Card (Suica / Pasmo).
+                </p>
+                <p>
+                  • Transfer time: Approx. 4 mins. Frequency: Every 5-8 mins.
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </>
+  );
+};
+
+// Draggable wrapper: drag starts only from the drag_indicator handle
+const DraggableTimelineItem: React.FC<Omit<TimelineItemCardProps, 'dragHandle'>> = (props) => {
+  const controls = useDragControls();
+
+  return (
+    <Reorder.Item
+      as="div"
+      value={props.item}
+      dragListener={false}
+      dragControls={controls}
+      whileDrag={{
+        scale: 1.02,
+        zIndex: 40,
+        filter: 'drop-shadow(0 16px 32px rgba(0,0,0,0.18))',
+      }}
+      className="relative pl-14 group"
+    >
+      <TimelineItemCard
+        {...props}
+        dragHandle={
+          <span
+            onPointerDown={(e) => controls.start(e)}
+            className="material-symbols-outlined text-[#c2c6d6] mt-1 cursor-grab active:cursor-grabbing touch-none select-none hover:text-[#727785] transition-colors"
+            title="Drag to reorder"
+          >
+            drag_indicator
+          </span>
+        }
+      />
+    </Reorder.Item>
+  );
+};
 
 export const TimelineView: React.FC<TimelineViewProps> = ({
   trip,
@@ -24,6 +337,7 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
   onOpenChangeHotel,
   onEditItem,
   onDeleteItem,
+  onReorderItems,
   onProceedToSplitPay,
   isGenerating = false,
 }) => {
@@ -42,27 +356,24 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
     return <TimelineLoadingView destination={trip.destination || 'Destination'} />;
   }
 
-  const getCategoryIcon = (type: string, tag: string) => {
-    switch (type) {
-      case 'flight':
-        return 'flight_land';
-      case 'hotel':
-        return 'hotel';
-      case 'dining':
-        return 'local_dining';
-      case 'nightlife':
-        return 'nightlife';
-      case 'culture':
-        return 'park';
-      case 'shopping':
-        return 'shopping_bag';
-      case 'activity':
-        return 'local_activity';
-      default:
-        if (tag.toLowerCase().includes('market')) return 'storefront';
-        return 'location_on';
-    }
+  const segments = buildSegments(currentDay.items);
+
+  // Reassemble the FULL day array after a run reorders (fixed items & other runs untouched)
+  const handleRunReorder = (startIndex: number, runLength: number, reordered: TimelineItem[]) => {
+    const fullItems = [...currentDay.items];
+    fullItems.splice(startIndex, runLength, ...reordered);
+    onReorderItems(fullItems);
   };
+
+  const cardProps = (item: TimelineItem): Omit<TimelineItemCardProps, 'dragHandle'> => ({
+    item,
+    isTransitExpanded: !!expandedTransits[item.id],
+    onToggleTransit: toggleTransit,
+    onEditItem,
+    onDeleteItem,
+    onOpenChangeFlight,
+    onOpenChangeHotel,
+  });
 
   return (
     <section className="flex-1 bg-[#f8f9fa] p-4 md:p-10 lg:p-12 overflow-y-auto custom-scrollbar">
@@ -90,222 +401,38 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
 
         {/* Timeline Events for Current Day */}
         <div className="space-y-6">
-          {currentDay.items.map((item) => {
-            const iconName = getCategoryIcon(item.type, item.tag);
-            const isTransitExpanded = !!expandedTransits[item.id];
-
-            return (
-              <div key={item.id} className="relative pl-14 group">
-                {/* Round Category Icon on Timeline */}
-                <div className="absolute left-0 top-3 w-12 h-12 bg-[#f3f4f5] rounded-full flex items-center justify-center border-4 border-[#f8f9fa] text-[#727785] group-hover:text-[#0058be] group-hover:border-[#d8e2ff] transition-all shadow-[0_4px_20px_-4px_rgba(0,0,0,0.04)] z-10">
-                  <span className="material-symbols-outlined text-[22px]">{iconName}</span>
-                </div>
-
-                {/* Event Card */}
-                <div className="bg-white rounded-2xl p-5 shadow-[0_4px_20px_-4px_rgba(0,0,0,0.04)] group-hover:shadow-[0_8px_30px_-4px_rgba(0,0,0,0.08)] transition-all border border-[#f3f4f5] hover:border-[#adc6ff]/40 flex gap-3 items-start relative">
-                  <span
-                    className="material-symbols-outlined text-[#c2c6d6] mt-1 cursor-grab hover:text-[#727785] transition-colors"
-                    title="Drag to reorder"
-                  >
-                    drag_indicator
-                  </span>
-
-                  <div className="flex-grow w-full">
-                    <div className="flex justify-between items-start mb-2">
-                      <div>
-                        <span className="inline-block px-2.5 py-0.5 bg-[#f3f4f5] text-[#727785] rounded-full text-xs font-semibold mb-1.5">
-                          {item.tag}
-                        </span>
-                        <h3 className="font-medium text-lg md:text-xl text-[#191c1d] leading-snug">
-                          {item.title}
-                        </h3>
-                        <p className="text-sm text-[#727785] mt-0.5">{item.subtitle}</p>
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        <span className="text-lg md:text-xl text-[#0058be] font-bold tracking-tight">
-                          {item.time}
-                        </span>
-                        <div className="flex items-center opacity-70 group-hover:opacity-100 transition-opacity">
-                          <button
-                            onClick={() => onEditItem(item)}
-                            className="text-[#727785] hover:text-[#0058be] hover:bg-[#f3f4f5] p-1.5 rounded-full transition-colors"
-                            title="Edit activity"
-                          >
-                            <span className="material-symbols-outlined text-[18px]">edit</span>
-                          </button>
-                          <button
-                            onClick={() => onDeleteItem(item.id)}
-                            className="text-[#727785] hover:text-[#ba1a1a] hover:bg-[#ffdad6]/40 p-1.5 rounded-full transition-colors"
-                            title="Remove activity"
-                          >
-                            <span className="material-symbols-outlined text-[18px]">delete</span>
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Rich Details if available */}
-                    {item.details && (
-                      <p className="text-xs text-[#424754] bg-[#f8f9fa] p-2.5 rounded-xl mt-2 border border-[#edeeef]">
-                        {item.details}
-                      </p>
-                    )}
-
-                    {/* Image Embed if available (e.g. Omoide Yokocho) */}
-                    {item.image && (
-                      <div className="mt-3.5 h-36 rounded-xl overflow-hidden shadow-xs relative group/img">
-                        <img
-                          src={item.image}
-                          alt={item.title}
-                          className="w-full h-full object-cover group-hover/img:scale-105 transition-transform duration-500"
-                        />
-                        <div className="absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-transparent opacity-0 group-hover/img:opacity-100 transition-opacity flex items-end p-2.5">
-                          <span className="text-white text-xs font-medium drop-shadow-sm">
-                            {item.title}
-                          </span>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Rich Flight Card Details */}
-                    {item.type === 'flight' && (
-                      <div className="mt-3 bg-[#f8f9fa] border border-[#e1e3e4] rounded-xl p-3.5 space-y-2 text-xs">
-                        <div className="flex items-center justify-between font-semibold text-[#191c1d]">
-                          <div className="flex items-center gap-1.5 text-[#0058be]">
-                            <span className="material-symbols-outlined text-[18px]">flight</span>
-                            <span>{item.flightDetails?.carrier || 'Airline Carrier'} ({item.flightDetails?.flightNumber || 'FLIGHT'})</span>
-                          </div>
-                          <span className="bg-[#d8e2ff] text-[#001a42] px-2 py-0.5 rounded-full text-[11px]">
-                            {item.flightDetails?.cabin || 'Economy'}
-                          </span>
-                        </div>
-
-                        <div className="flex items-center justify-between text-[#424754]">
-                          <div className="flex items-center gap-2">
-                            <span className="font-bold text-sm text-[#191c1d]">{item.flightDetails?.depTime || item.time}</span>
-                            <span className="font-semibold">{item.flightDetails?.depAirport || 'DEP'}</span>
-                            <span className="material-symbols-outlined text-[16px] text-[#727785]">arrow_forward</span>
-                            <span className="font-semibold">{item.flightDetails?.arrAirport || 'ARR'}</span>
-                            <span className="font-bold text-sm text-[#191c1d]">{item.flightDetails?.arrTime || item.time}</span>
-                          </div>
-                          {item.flightDetails?.price && (
-                            <span className="font-bold text-[#006c49] text-xs">
-                              {item.flightDetails.currency || '$'}{item.flightDetails.price} / pax
-                            </span>
-                          )}
-                        </div>
-
-                        <div className="pt-2 border-t border-[#e1e3e4] flex items-center justify-between">
-                          <span className="text-[11px] text-[#727785]">
-                            Terminal: {item.terminal || 'T1'} • Booking Ref: {item.bookingRef || 'JL-88419'}
-                          </span>
-                          <button
-                            onClick={onOpenChangeFlight}
-                            className="bg-[#d8e2ff] text-[#001a42] px-3 py-1 rounded-full text-xs font-semibold hover:bg-[#adc6ff] transition-colors flex items-center gap-1 cursor-pointer shadow-2xs"
-                          >
-                            <span className="material-symbols-outlined text-[14px]">sync_alt</span>
-                            Change Flight
-                          </button>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Rich Hotel Card Details */}
-                    {item.type === 'hotel' && (
-                      <div className="mt-3 bg-[#f8f9fa] border border-[#e1e3e4] rounded-xl p-3.5 space-y-2 text-xs">
-                        <div className="flex items-center justify-between font-semibold text-[#191c1d]">
-                          <div className="flex items-center gap-1.5 text-[#0058be]">
-                            <span className="material-symbols-outlined text-[18px]">hotel</span>
-                            <span>{item.hotelDetails?.name || item.title}</span>
-                          </div>
-                          {item.hotelDetails?.starRating && (
-                            <div className="flex items-center text-[#e5a900] bg-[#fff8e1] px-2 py-0.5 rounded-full text-[11px] font-bold">
-                              <span>{item.hotelDetails.starRating}★ Hotel</span>
-                            </div>
-                          )}
-                        </div>
-
-                        {item.hotelDetails?.address && (
-                          <p className="text-[11px] text-[#727785] flex items-center gap-1">
-                            <span className="material-symbols-outlined text-[14px]">location_on</span>
-                            {item.hotelDetails.address}
-                          </p>
-                        )}
-
-                        <div className="flex flex-wrap gap-2 text-[11px]">
-                          <span className="bg-white border border-[#e1e3e4] px-2.5 py-1 rounded-md text-[#424754]">
-                            Room: <strong>{item.hotelDetails?.roomType || 'Standard Deluxe'}</strong>
-                          </span>
-                          <span className="bg-white border border-[#e1e3e4] px-2.5 py-1 rounded-md text-[#424754]">
-                            Check-in: <strong>{item.hotelDetails?.checkIn || '15:00'}</strong> | Check-out: <strong>{item.hotelDetails?.checkOut || '11:00'}</strong>
-                          </span>
-                        </div>
-
-                        <div className="pt-2 border-t border-[#e1e3e4] flex items-center justify-between">
-                          <span className="text-[11px] font-semibold text-[#006c49]">
-                            {item.hotelDetails?.pricePerNight
-                              ? `${item.hotelDetails.currency || '$'}${item.hotelDetails.pricePerNight} / night`
-                              : 'Confirmed Booking'}
-                          </span>
-                          <div className="flex gap-2">
-                            <button
-                              onClick={onOpenChangeHotel}
-                              className="bg-[#d8e2ff] text-[#001a42] px-3 py-1 rounded-full text-xs font-semibold hover:bg-[#adc6ff] transition-colors flex items-center gap-1 cursor-pointer shadow-2xs"
-                            >
-                              <span className="material-symbols-outlined text-[14px]">sync_alt</span>
-                              Change Hotel
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* Transit Detail Connector */}
-                {item.transitToNext && (
-                  <div className="relative my-3 pt-1 pb-1">
-                    <div className="flex flex-col gap-1.5">
-                      <button
-                        onClick={() => toggleTransit(item.id)}
-                        className="flex items-center gap-2 text-[#727785] text-xs font-medium bg-[#f3f4f5] hover:bg-[#e7e8e9] hover:text-[#191c1d] px-3.5 py-1.5 rounded-full transition-all cursor-pointer w-fit shadow-2xs group/btn"
-                      >
-                        <span className="material-symbols-outlined text-[16px] text-[#0058be]">
-                          {item.transitToNext.type === 'subway'
-                            ? 'train'
-                            : item.transitToNext.type === 'train'
-                            ? 'train'
-                            : item.transitToNext.type === 'walk'
-                            ? 'directions_walk'
-                            : 'directions_bus'}
-                        </span>
-                        <span>{item.transitToNext.description}</span>
-                        <span className="material-symbols-outlined text-[16px] group-hover/btn:translate-y-0.5 transition-transform">
-                          {isTransitExpanded ? 'expand_less' : 'expand_more'}
-                        </span>
-                      </button>
-
-                      {isTransitExpanded && (
-                        <div className="bg-white p-3 rounded-xl border border-[#e1e3e4] shadow-xs text-xs text-[#424754] space-y-1.5 animate-in fade-in duration-200">
-                          <div className="flex justify-between font-medium">
-                            <span className="text-[#0058be]">Route Navigation</span>
-                            <span className="text-[#006c49]">Optimal Route</span>
-                          </div>
-                          <p>
-                            • Board from departure platform with IC Card (Suica / Pasmo).
-                          </p>
-                          <p>
-                            • Transfer time: Approx. 4 mins. Frequency: Every 5-8 mins.
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
+          {segments.map((segment) =>
+            segment.kind === 'fixed' ? (
+              <div key={segment.item.id} className="relative pl-14 group">
+                <TimelineItemCard
+                  {...cardProps(segment.item)}
+                  dragHandle={
+                    <span
+                      className="material-symbols-outlined text-[#c2c6d6]/70 mt-1 select-none"
+                      title="Fixed time — cannot be moved"
+                    >
+                      lock
+                    </span>
+                  }
+                />
               </div>
-            );
-          })}
+            ) : (
+              <Reorder.Group
+                key={`run-${segment.startIndex}`}
+                axis="y"
+                as="div"
+                className="space-y-6"
+                values={segment.items}
+                onReorder={(reordered: TimelineItem[]) =>
+                  handleRunReorder(segment.startIndex, segment.items.length, reordered)
+                }
+              >
+                {segment.items.map((item) => (
+                  <DraggableTimelineItem key={item.id} {...cardProps(item)} />
+                ))}
+              </Reorder.Group>
+            )
+          )}
         </div>
 
         {/* Add Activity Button */}
@@ -326,7 +453,7 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
               <span className="text-[#727785] font-medium text-sm">Estimated Total Cost</span>
               <div className="text-right">
                 <span className="font-medium text-2xl text-[#191c1d]">
-                  ${trip.costs.activities + trip.costs.accommodation}
+                  ${(trip.costs.accommodation + trip.costs.flights).toLocaleString()}
                 </span>
                 <span className="text-sm font-normal text-[#727785] ml-2">
                   (${trip.costs.usdEstimate.toFixed(2)})
@@ -336,15 +463,11 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
 
             <div className="flex flex-col gap-2 pt-2 border-t border-[#e1e3e4]">
               <div className="flex justify-between text-xs text-[#727785]">
-                <span>Activities & Dining</span>
-                <span className="font-medium text-[#191c1d]">${trip.costs.activities.toLocaleString()}</span>
-              </div>
-              <div className="flex justify-between text-xs text-[#727785]">
-                <span>Accommodation (5 Nights)</span>
+                <span>Accommodation</span>
                 <span className="font-medium text-[#191c1d]">${trip.costs.accommodation.toLocaleString()}</span>
               </div>
               <div className="flex justify-between text-xs text-[#727785]">
-                <span>Flights (Estimate)</span>
+                <span>Flights</span>
                 <span className="font-medium text-[#191c1d]">${trip.costs.flights.toLocaleString()}</span>
               </div>
             </div>
