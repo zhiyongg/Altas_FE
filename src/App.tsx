@@ -34,6 +34,26 @@ import { ExploreView } from './components/ExploreView';
 
 const API_BASE_URL = 'http://127.0.0.1:8000';
 
+// Maps the backend's schedule-entry "kind" field onto the frontend's
+// TimelineItem['type'] union. Widened beyond meal/hotel/flight so activities
+// added with a specific category (dining/culture/nature/shopping/nightlife —
+// see categoryToType in handleAddActivity) round-trip with that category
+// intact instead of collapsing to generic "activity" the next time the
+// itinerary reloads from /api/chat or /api/itinerary/item. Any kind not
+// listed here (e.g. the planner's own "attraction") still falls back to
+// 'activity', matching the old behavior.
+const KIND_TO_TYPE: Record<string, TimelineItem['type']> = {
+  meal: 'dining',
+  hotel: 'hotel',
+  flight: 'flight',
+  dining: 'dining',
+  culture: 'culture',
+  nature: 'nature',
+  shopping: 'shopping',
+  nightlife: 'nightlife',
+  activity: 'activity',
+};
+
 const mapChatItineraryToTrip = (itinerary: any, currentTrip: Trip): Trip => ({
   ...currentTrip,
   destination: itinerary.destination || currentTrip.destination,
@@ -41,9 +61,10 @@ const mapChatItineraryToTrip = (itinerary: any, currentTrip: Trip): Trip => ({
     dayNumber: Number(day.day ?? dayIndex) + 1,
     dateLabel: `Day ${Number(day.day ?? dayIndex) + 1} • ${day.date || ''}`,
     items: (day.schedule || []).map((entry: any, itemIndex: number): TimelineItem => ({
-      id: `chat-${day.day ?? dayIndex}-${itemIndex}-${Date.now()}`,
+// fixed — prefer the id the backend echoes back, fall back to positional
+      id: entry._client_id ?? `item-${day.day ?? dayIndex}-${itemIndex}`,
       time: entry.time || '12:00',
-      type: entry.kind === 'meal' ? 'dining' : entry.kind === 'hotel' ? 'hotel' : entry.kind === 'flight' ? 'flight' : 'activity',
+      type: KIND_TO_TYPE[entry.kind as string] ?? 'activity',
       tag: entry.kind ? String(entry.kind).charAt(0).toUpperCase() + String(entry.kind).slice(1) : 'Activity',
       title: entry.name || entry.location?.name || 'Planned activity',
       subtitle: entry.location?.address || entry.location?.name || '',
@@ -61,6 +82,16 @@ const mapChatItineraryToTrip = (itinerary: any, currentTrip: Trip): Trip => ({
   })),
 });
 
+// Category (from AddActivityModal/Google Places) -> TimelineItem type.
+// Anything not listed here (Tickets, unrecognized categories) falls back
+// to generic 'activity'.
+const categoryToType: Record<string, TimelineItem['type']> = {
+  Dining: 'dining',
+  Cafe: 'dining',
+  Culture: 'culture',
+  Nature: 'nature',
+  Shopping: 'shopping',
+};
 
 export const App: React.FC = () => {
   const emptyTrip: Trip = {
@@ -85,8 +116,8 @@ export const App: React.FC = () => {
   const [trip, setTrip] = useState<Trip>(emptyTrip);
   const [activeTab, setActiveTab] = useState<NavTab>('trips');
   const [isMapView, setIsMapView] = useState<boolean>(false);
-  const [activeView, setActiveView] = useState<
-    'landing' | 'workspace' | 'finalize_pay' | 'archive'
+  const [activeView, setActiveView] = useState <
+    'landing' | 'workspace' | 'finalize_pay' | 'archive' | 'explore'
   >('landing');
   const [activeDayIndex, setActiveDayIndex] = useState<number>(0);
   const [hasGeneratedItinerary, setHasGeneratedItinerary] =
@@ -119,6 +150,24 @@ export const App: React.FC = () => {
     adults: 2,
     rooms: 1,
     children: 0,
+  });
+
+  const [flightSearchParams, setFlightSearchParams] = useState<{
+    origin: string;
+    destination: string;
+    departDate: string;
+    returnDate: string;
+    adults: number;
+    childrenCount: number;
+    infants: number;
+  }>({
+    origin: '',
+    destination: '',
+    departDate: '',
+    returnDate: '',
+    adults: 2,
+    childrenCount: 0,
+    infants: 0,
   });
 
   // AI Chat state
@@ -163,6 +212,19 @@ export const App: React.FC = () => {
   const handleToggleMapView = (isMap: boolean) => {
     setIsMapView(isMap);
     setActiveView('workspace');
+  };
+
+  // Best-effort "where in the trip is the user currently looking" coords,
+  // used to bias/rank Add Activity search results and compute distance
+  // labels. Falls back through: active day's first located stop -> any
+  // day's first located stop -> undefined (search still works, just
+  // without proximity ranking).
+  const getActivitySearchOrigin = (): { lat?: number; lng?: number } => {
+    const findCoords = (day: (typeof trip.days)[number] | undefined) =>
+      day?.items.find((it) => it.mapCoords?.lat != null && it.mapCoords?.lng != null)?.mapCoords;
+
+    const coords = findCoords(trip.days[activeDayIndex]) ?? trip.days.map(findCoords).find(Boolean);
+    return { lat: coords?.lat, lng: coords?.lng };
   };
 
   // Switch Flight
@@ -275,8 +337,14 @@ export const App: React.FC = () => {
     setIsAccommodationModalOpen(false);
   };
 
-  // Add Activity to current day
-  const handleAddActivity = (activity: ActivityOption) => {
+  // Add Activity to current day — now searches and persists via the real
+  // backend (Google Places through /activity/search for the picker,
+  // /api/itinerary/item to save the chosen item) instead of only updating
+  // local state with a hardcoded mock cost bump.
+  // Add Activity to current day — now persists via the same
+  // /api/itinerary/item endpoint used for edit/delete, instead of only
+  // updating local state with a hardcoded mock cost bump.
+  const handleAddActivity = async (activity: ActivityOption) => {
     const newItem: TimelineItem = {
       id: `item-${Date.now()}`,
       time: '19:30',
@@ -297,26 +365,67 @@ export const App: React.FC = () => {
       },
     };
 
-    setTrip((prev) => {
-      const updatedDays = [...prev.days];
-      const targetDay = updatedDays[activeDayIndex] || updatedDays[0];
-      targetDay.items = [...targetDay.items, newItem];
+    const dayNumber = activeDayIndex + 1;
+    let persisted = false;
 
-      return {
-        ...prev,
-        days: updatedDays,
-        costs: {
-          ...prev.costs,
-          // Activity cost tracked in data model but NOT included in estimated total
-          activities: prev.costs.activities + 6000,
-        },
-      };
-    });
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/itinerary/item`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: chatSessionId,
+          day_number: dayNumber,
+          item: {
+            id: newItem.id,
+            time: newItem.time,
+            kind: newItem.type === 'dining' ? 'meal' : newItem.type,
+            name: newItem.title,
+            notes: newItem.details,
+            // ActivityOption doesn't currently carry lat/lng — if/when it
+            // does, wire it through here the same way handleSaveEditedItem
+            // does for mapCoords.
+            location: undefined,
+          },
+        }),
+      });
+      if (!response.ok) throw new Error(`Failed to add activity (${response.status})`);
+      const data = await response.json();
+      if (data.itinerary?.daily_itinerary?.days) {
+        setTrip((prev) => ({
+          ...mapChatItineraryToTrip(data.itinerary.daily_itinerary, prev),
+          costs: {
+            ...prev.costs,
+            activities: prev.costs.activities + 6000,
+          },
+        }));
+        persisted = true;
+      }
+    } catch (error) {
+      console.error('Error adding activity:', error);
+    }
+
+    if (!persisted) {
+      // Optimistic local fallback so the UI doesn't feel broken if the API
+      // is down — built immutably instead of mutating prev.days in place.
+      setTrip((prev) => {
+        const updatedDays = prev.days.map((day, idx) =>
+          idx === activeDayIndex ? { ...day, items: [...day.items, newItem] } : day,
+        );
+        return {
+          ...prev,
+          days: updatedDays,
+          costs: {
+            ...prev.costs,
+            activities: prev.costs.activities + 6000,
+          },
+        };
+      });
+    }
 
     const confirmMsg: ChatMessage = {
       id: `msg-${Date.now()}`,
       sender: 'ai',
-      text: `Added "${activity.title}" to ${trip.days[activeDayIndex].dateLabel}. Optimal transit route mapped.`,
+      text: `Added "${activity.title}" to ${trip.days[activeDayIndex]?.dateLabel ?? 'your itinerary'}. Optimal transit route mapped.`,
       timestamp: 'Just now',
     };
     setChatMessages((prev) => [...prev, confirmMsg]);
@@ -324,24 +433,55 @@ export const App: React.FC = () => {
   };
 
   // Edit / Save Timeline Item
-  const handleSaveEditedItem = (savedItem: TimelineItem) => {
-    setTrip((prev) => {
-      const updatedDays = prev.days.map((day, idx) => {
-        if (idx !== activeDayIndex) return day;
-        const exists = day.items.some((it) => it.id === savedItem.id);
-        const newItems = exists
-          ? day.items.map((it) => (it.id === savedItem.id ? savedItem : it))
-          : [...day.items, savedItem];
-
-        // Sort items chronologically by time
-        newItems.sort((a, b) => timeToMinutes(a.time) - timeToMinutes(b.time));
-        return { ...day, items: newItems };
+  const handleSaveEditedItem = async (savedItem: TimelineItem) => {
+    const dayNumber = activeDayIndex + 1;
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/itinerary/item`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: chatSessionId,
+          day_number: dayNumber,
+          item: {
+            id: savedItem.id,
+            time: savedItem.time,
+            kind: savedItem.type === 'dining' ? 'meal' : savedItem.type,
+            name: savedItem.title,
+            notes: savedItem.details,
+            location: savedItem.mapCoords
+              ? {
+                  latitude: savedItem.mapCoords.lat,
+                  longitude: savedItem.mapCoords.lng,
+                  name: savedItem.subtitle,
+                }
+              : undefined,
+          },
+        }),
       });
-      return { ...prev, days: updatedDays };
-    });
-
-    setIsEditItemModalOpen(false);
-    setEditingItem(null);
+      if (!response.ok) throw new Error(`Failed to save item (${response.status})`);
+      const data = await response.json();
+      if (data.itinerary?.daily_itinerary?.days) {
+        setTrip((prev) => mapChatItineraryToTrip(data.itinerary.daily_itinerary, prev));
+      }
+    } catch (error) {
+      console.error('Error saving itinerary item:', error);
+      // optimistic local fallback so the UI doesn't feel broken if the API is down
+      setTrip((prev) => {
+        const updatedDays = prev.days.map((day, idx) => {
+          if (idx !== activeDayIndex) return day;
+          const exists = day.items.some((it) => it.id === savedItem.id);
+          const newItems = exists
+            ? day.items.map((it) => (it.id === savedItem.id ? savedItem : it))
+            : [...day.items, savedItem];
+          newItems.sort((a, b) => timeToMinutes(a.time) - timeToMinutes(b.time));
+          return { ...day, items: newItems };
+        });
+        return { ...prev, days: updatedDays };
+      });
+    } finally {
+      setIsEditItemModalOpen(false);
+      setEditingItem(null);
+    }
   };
 
   // Reorder items in the active day (drag-and-drop)
@@ -415,18 +555,49 @@ export const App: React.FC = () => {
   };
 
   // Delete item
-  const handleDeleteItem = (itemId: string) => {
+const handleDeleteItem = async (itemId: string) => {
+  const day = trip.days[activeDayIndex];
+  const itemToDelete = day?.items.find((it) => it.id === itemId);
+  if (!itemToDelete) return;
+
+  // Flights/hotels aren't part of chat.py's Place model — nothing to call.
+  if (itemToDelete.type === 'flight' || itemToDelete.type === 'hotel') {
+    console.warn('Flight/hotel items cannot be deleted via the itinerary chat layer.');
+    return;
+  }
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/itinerary/action`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: chatSessionId,
+        action: 'REMOVE_PLACE',
+        params: {
+          place_name: itemToDelete.title,
+          day: activeDayIndex, // chat.py days are 0-indexed already
+        },
+      }),
+    });
+    if (!response.ok) throw new Error(`Failed to delete item (${response.status})`);
+    const data = await response.json();
+    if (data.itinerary?.daily_itinerary?.days) {
+      setTrip((prev) => mapChatItineraryToTrip(data.itinerary.daily_itinerary, prev));
+    }
+  } catch (error) {
+    console.error('Error deleting itinerary item:', error);
+    // Local-only fallback: remove from view even if the API call failed.
+    // Will be overwritten by the server's version on next sync.
     setTrip((prev) => {
-      const updatedDays = prev.days.map((day, idx) => {
-        if (idx !== activeDayIndex) return day;
-        return {
-          ...day,
-          items: day.items.filter((it) => it.id !== itemId),
-        };
-      });
+      const updatedDays = prev.days.map((d, idx) =>
+        idx !== activeDayIndex
+          ? d
+          : { ...d, items: d.items.filter((it) => it.id !== itemId) },
+      );
       return { ...prev, days: updatedDays };
     });
-  };
+  }
+};
 
   // AI Chat & Intent Processing
   const handleSendMessage = async (userText: string) => {
@@ -454,8 +625,8 @@ export const App: React.FC = () => {
       if (!response.ok) throw new Error(`Chat API error: ${response.status}`);
       const data = await response.json();
 
-      if (data.itinerary?.days) {
-        setTrip((prev) => mapChatItineraryToTrip(data.itinerary, prev));
+      if (data.itinerary?.daily_itinerary?.days) {
+        setTrip((prev) => mapChatItineraryToTrip(data.itinerary.daily_itinerary, prev));
       }
 
       /*
@@ -641,6 +812,7 @@ export const App: React.FC = () => {
             currency: 'USD',
           };
 
+      
       const rawDailyItinerary =
         apiData.daily_itinerary?.days ||
         (Array.isArray(apiData.daily_itinerary) ? apiData.daily_itinerary : []);
@@ -664,7 +836,7 @@ export const App: React.FC = () => {
               itemType = 'flight';
 
             return {
-              id: `item-${day.day || dayIdx}-${index}-${Date.now()}`,
+              id: `item-${day.day || dayIdx}-${index}`,
               time: item.time,
               type: itemType,
               tag: item.kind
@@ -700,7 +872,7 @@ export const App: React.FC = () => {
 
             if (!hasFlight) {
               items.unshift({
-                id: `item-flight-outbound-${Date.now()}`,
+                id: `item-flight-outbound-day${dayIdx + 1}`,
                 time: outboundDetails.arrTime,
                 type: 'flight',
                 tag: 'Outbound Flight',
@@ -714,7 +886,7 @@ export const App: React.FC = () => {
 
             if (!hasHotel) {
               items.push({
-                id: `item-hotel-checkin-${Date.now()}`,
+                id: `item-hotel-checkin-day${dayIdx + 1}`,
                 time: hotelDetails.checkIn || '15:00',
                 type: 'hotel',
                 tag: 'Hotel Check-in',
@@ -733,7 +905,7 @@ export const App: React.FC = () => {
             );
             if (!hasCheckout) {
               items.push({
-                id: `item-hotel-checkout-${Date.now()}`,
+                id: `item-hotel-checkout-day${dayIdx + 1}`,
                 time: hotelDetails.checkOut || '11:00',
                 type: 'hotel',
                 tag: 'Hotel Check-out',
@@ -750,7 +922,7 @@ export const App: React.FC = () => {
             );
             if (!hasReturnFlight) {
               items.push({
-                id: `item-flight-return-${Date.now()}`,
+                id: `item-flight-return-day${dayIdx + 1}`,
                 time: returnDetails.depTime,
                 type: 'flight',
                 tag: 'Return Flight',
@@ -773,6 +945,23 @@ export const App: React.FC = () => {
           };
         },
       );
+
+      const newFlightSearchParams = {
+        origin: outboundDetails.depAirport,
+        destination: outboundDetails.arrAirport,
+        departDate:
+          apiData.trip_overview?.start_date ||
+          rawDailyItinerary[0]?.date ||
+          '',
+        returnDate:
+          apiData.trip_overview?.end_date ||
+          rawDailyItinerary[rawDailyItinerary.length - 1]?.date ||
+          '',
+        adults: travelersCount,
+        childrenCount: 0,
+        infants: 0,
+      };
+      setFlightSearchParams(newFlightSearchParams);
 
       const newTrip: Trip = {
         id: `trip-${Date.now()}`,
@@ -1000,12 +1189,21 @@ export const App: React.FC = () => {
         isOpen={isFlightModalOpen}
         onClose={() => setIsFlightModalOpen(false)}
         onSelectFlight={handleSelectFlight}
+        origin={flightSearchParams.origin}
+        destination={flightSearchParams.destination}
+        departDate={flightSearchParams.departDate}
+        returnDate={flightSearchParams.returnDate}
+        adults={flightSearchParams.adults}
+        childrenCount={flightSearchParams.childrenCount}
+        infants={flightSearchParams.infants}
       />
 
       <AddActivityModal
         isOpen={isActivityModalOpen}
         onClose={() => setIsActivityModalOpen(false)}
         onAddActivity={handleAddActivity}
+        originLat={getActivitySearchOrigin().lat}
+        originLng={getActivitySearchOrigin().lng}
       />
 
       <ChangeAccommodationModal

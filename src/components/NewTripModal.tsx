@@ -1,3 +1,4 @@
+//NewTripModal.tsx
 import React, { useState } from 'react';
 import { Trip } from '../types';
 import { DateRangePicker } from './DateRangePicker';
@@ -26,8 +27,8 @@ export const NewTripModal: React.FC<NewTripModalProps> = ({
     onCreateTrip({
       destination,
       dates,
-      travelersCount,
-      budget,
+      travelersCount: travelersCount === '' ? 1:travelersCount,
+      budget: budget === '' ? 0: budget,
     });
     onClose();
   };

@@ -1,3 +1,5 @@
+//TimelineView
+
 import React, { useState } from 'react';
 import { Reorder, useDragControls } from 'motion/react';
 import { Trip, TimelineItem } from '../types';
@@ -177,9 +179,9 @@ const TimelineItemCard: React.FC<TimelineItemCardProps> = ({
                   <span className="font-semibold">{item.flightDetails?.arrAirport || 'ARR'}</span>
                   <span className="font-bold text-sm text-[#191c1d]">{item.flightDetails?.arrTime || item.time}</span>
                 </div>
-                {item.flightDetails?.price && (
+                {item.flightDetails?.price != null && (
                   <span className="font-bold text-[#006c49] text-xs">
-                    {item.flightDetails.currency || '$'}{item.flightDetails.price} / pax
+                    {item.flightDetails.currency || '$'}{Number(item.flightDetails.price).toFixed(2)} / pax
                   </span>
                 )}
               </div>
@@ -232,8 +234,8 @@ const TimelineItemCard: React.FC<TimelineItemCardProps> = ({
 
               <div className="pt-2 border-t border-[#e1e3e4] flex items-center justify-between">
                 <span className="text-[11px] font-semibold text-[#006c49]">
-                  {item.hotelDetails?.pricePerNight
-                    ? `${item.hotelDetails.currency || '$'}${item.hotelDetails.pricePerNight} / night`
+                  {item.hotelDetails?.pricePerNight != null
+                    ? `${item.hotelDetails.currency || '$'}${Number(item.hotelDetails.pricePerNight).toFixed(2)} / night`
                     : 'Confirmed Booking'}
                 </span>
                 <div className="flex gap-2">

@@ -172,4 +172,35 @@ export interface ActivityOption {
   description: string;
   timeSlot?: string;
   isFavorite?: boolean;
+  // Populated by the real /activity/search endpoint (Google Places) so the
+  // item can be placed on the map and sent to the backend with a real
+  // location when added to the itinerary. Absent/undefined for any
+  // activity that didn't come from a geocoded source.
+  latitude?: number | null;
+  longitude?: number | null;
+  address?: string | null;
+}
+
+export interface FlightSegmentInfo {
+  time: string;
+  date: string;
+  date_label: string;
+  airport_code: string;
+  airport_name?: string | null;
+}
+
+export interface FlightOption {
+  id: string;
+  airline: string;
+  airline_code?: string | null;
+  flight_number: string;
+  departure: FlightSegmentInfo;
+  arrival: FlightSegmentInfo;
+  duration_minutes?: number | null;
+  stops: number;
+  layover_text: string;
+  price: number;
+  currency: string;
+  seats_left?: number | null;
+  is_refundable: boolean;
 }

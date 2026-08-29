@@ -1,3 +1,5 @@
+//ChangeAccommodationModal
+
 import React, { useEffect, useMemo, useState } from 'react';
 import { StayOption, RoomOption } from '../types';
 import { currencySymbol } from '../currency';
@@ -109,7 +111,7 @@ const RoomOptionRow: React.FC<RoomOptionRowProps> = ({ room, onSelect }) => (
       <div className="text-right">
         <p className="text-sm font-bold text-[#191c1d]">
           {currencySymbol(room.currency)}
-          {room.price_per_night.toLocaleString()}
+          {room.price_per_night.toFixed(2)}
         </p>
         <p className="text-[10px] text-[#727785]">/ night</p>
       </div>
@@ -123,9 +125,7 @@ const RoomOptionRow: React.FC<RoomOptionRowProps> = ({ room, onSelect }) => (
   </div>
 );
 
-export const ChangeAccommodationModal: React.FC<
-  ChangeAccommodationModalProps
-> = ({
+export const ChangeAccommodationModal: React.FC<ChangeAccommodationModalProps> = ({
   isOpen,
   onClose,
   onSelectStay,
@@ -442,7 +442,7 @@ export const ChangeAccommodationModal: React.FC<
                                       {currencySymbol(
                                         stay.selected_room.currency,
                                       )}
-                                      {stay.selected_room.price_per_night.toLocaleString()}
+                                      {stay.selected_room.price_per_night.toFixed(2)}
                                     </p>
                                   </div>
                                   <button
@@ -597,7 +597,7 @@ export const ChangeAccommodationModal: React.FC<
                                     {currencySymbol(
                                       stay.selected_room.currency,
                                     )}
-                                    {stay.selected_room.price_per_night.toLocaleString()}
+                                    {stay.selected_room.price_per_night.toFixed(2)}
                                   </p>
                                 </div>
                                 <button
