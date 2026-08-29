@@ -32,7 +32,7 @@ import { NewTripModal } from './components/NewTripModal';
 import { ArchiveView } from './components/ArchiveView';
 import { ExploreView } from './components/ExploreView';
 
-const API_BASE_URL = 'http://127.0.0.1:8001';
+const API_BASE_URL = 'http://127.0.0.1:8000';
 
 const mapChatItineraryToTrip = (itinerary: any, currentTrip: Trip): Trip => ({
   ...currentTrip,
@@ -480,7 +480,7 @@ export const App: React.FC = () => {
       setChatMessages((prev) => [...prev, {
         id: `ai-error-${Date.now()}`,
         sender: 'ai',
-        text: 'I could not reach the itinerary chat service. Make sure testing_api.py is running on port 8001.',
+        text: 'I could not reach the itinerary chat service. Make sure testing_api.py is running on port 8000.',
         timestamp: 'Just now',
       }]);
     } finally {
@@ -825,8 +825,8 @@ export const App: React.FC = () => {
           text: `Welcome to your customized trip plan for ${newTrip.destination}! I've generated an itinerary with verified flights (${outboundDetails.carrier} ${outboundDetails.flightNumber}) and hotel booking (${hotelDetails.name}).`,
           timestamp: 'Just now',
           suggestionPills: [
-            'Find rooftop dining nearby',
-            'Explore local night markets',
+            'Summarize the generated itinerary',
+            'When is my hotel check-out time?',
           ],
         },
       ]);
