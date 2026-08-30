@@ -34,6 +34,24 @@ import { ExploreView } from './components/ExploreView';
 
 const API_BASE_URL = 'http://127.0.0.1:8000';
 
+const formatActivityDetails = (
+  rating?: number | string | null,
+  duration?: number | string | null,
+) => {
+  const ratingText = rating != null ? `Rating: ${rating} ⭐` : null;
+  const durationText =
+    duration == null || duration === ''
+      ? null
+      : typeof duration === 'number'
+        ? `${duration} mins`
+        : String(duration).trim();
+
+  if (ratingText && durationText) return `${ratingText} • Duration: ${durationText}`;
+  if (ratingText) return ratingText;
+  if (durationText) return `Duration: ${durationText}`;
+  return undefined;
+};
+
 const normalizeChatItinerary = (payload: any): any | null => {
   if (!payload) return null;
 
@@ -74,7 +92,12 @@ const mapChatItineraryToTrip = (itinerary: any, currentTrip: Trip): Trip => {
         tag: entry.kind ? String(entry.kind).charAt(0).toUpperCase() + String(entry.kind).slice(1) : 'Activity',
         title: entry.name || entry.location?.name || 'Planned activity',
         subtitle: entry.location?.address || entry.location?.name || '',
-        details: entry.rating ? `Rating: ${entry.rating}` : undefined,
+        rating: entry.rating ?? undefined,
+        reviewsCount: entry.reviews_count ?? entry.reviewsCount ?? undefined,
+        details: formatActivityDetails(
+          entry.rating,
+          entry.duration_min ?? entry.duration_minutes ?? entry.duration ?? entry.estimated_duration,
+        ),
         mapCoords: entry.location
           ? { x: 0, y: 0, lat: entry.location.latitude, lng: entry.location.longitude }
           : undefined,
@@ -356,7 +379,9 @@ export const App: React.FC = () => {
       title: activity.title,
       subtitle: activity.description,
       image: activity.image,
-      details: `Rating: ${activity.rating} ⭐ (${activity.reviewsCount} reviews) • Distance: ${activity.distance}`,
+      rating: activity.rating,
+      reviewsCount: activity.reviewsCount,
+      details: formatActivityDetails(activity.rating, 60),
       transitToNext: {
         type: 'walk',
         description: `Walk --- 500m (6 mins) ---> ${activity.title}`,
