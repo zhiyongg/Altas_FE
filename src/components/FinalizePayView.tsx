@@ -1,10 +1,9 @@
-import React, { useEffect, useState } from 'react';
-import { Trip } from '../types';
-
-// Point this at wherever your FastAPI backend actually runs, same as
-// ChangeAccommodationModal.tsx — add a Vite proxy if you want a relative
-// path instead.
-const API_BASE = 'http://localhost:8000';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Trip, TripMember } from '../types';
+import { InviteFriendsModal } from './InviteFriendsModal';
+import { API_BASE } from '../api';
+import { currencySymbol } from '../currency';
+import { tripTotal } from '../utils/costs';
 
 interface HotelSearchParams {
   destId: string | null;
@@ -15,12 +14,23 @@ interface HotelSearchParams {
   children: number;
 }
 
+interface FlightSearchParams {
+  origin: string;
+  destination: string;
+  departDate: string;
+  returnDate: string;
+  adults: number;
+  childrenCount: number;
+  infants: number;
+}
+
 interface FinalizePayViewProps {
   trip: Trip;
-  // Passed through so it can be persisted alongside `trip` before redirecting
-  // to Stripe — see the comment in handlePay for why this is necessary.
   hotelSearchParams: HotelSearchParams;
+  flightSearchParams: FlightSearchParams;
+  chatSessionId: string;
   onBack: () => void;
+  onUpdateMembers: (members: TripMember[]) => void;
 }
 
 interface CheckoutSessionInfo {
@@ -36,12 +46,16 @@ interface CheckoutSessionInfo {
 export const FinalizePayView: React.FC<FinalizePayViewProps> = ({
   trip,
   hotelSearchParams,
+  flightSearchParams,
+  chatSessionId,
   onBack,
+  onUpdateMembers,
 }) => {
   const [isSplitGroup, setIsSplitGroup] = useState<boolean>(true);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [isPaidSuccess, setIsPaidSuccess] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
 
   // Sessions returned by the backend for the current "Confirm & Pay" click.
   // Only the current user's session is redirected into automatically —
@@ -58,9 +72,68 @@ export const FinalizePayView: React.FC<FinalizePayViewProps> = ({
     null,
   );
 
-  const totalCost = trip.budget || 2500.0;
-  const numTravelers = trip.members.length || 4;
+  // Everything below used to be invented: the total came from `trip.budget`
+  // (a per-person budget *input*, not a cost) with a 2500 fallback, and the
+  // three itemized rows were literal hardcoded strings — "SFO to NRT",
+  // "Keio Plaza Hotel Stay • 5 Nights", "$850.00", "$1,200.00", "$450.00" —
+  // regardless of the actual trip. So the receipt never described the trip
+  // being bought and its rows never added up to the amount charged. Derive
+  // all of it from trip.costs / the itinerary instead.
+  const currency = trip.costs.currency || 'USD';
+  const symbol = currencySymbol(currency);
+  const totalCost = tripTotal(trip.costs);
+  const numTravelers = trip.members.length || trip.travelersCount || 1;
   const perPersonShare = totalCost / numTravelers;
+
+  const money = (amount: number) =>
+    `${symbol}${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+  const lineItems = useMemo(() => {
+    const allItems = trip.days.flatMap((day) => day.items);
+    const flights = allItems.filter((it) => it.type === 'flight');
+    const hotel = allItems.find((it) => it.type === 'hotel');
+
+    const route = flights.length
+      ? Array.from(
+          new Set(
+            flights.flatMap((f) =>
+              [f.flightDetails?.depAirport, f.flightDetails?.arrAirport].filter(Boolean),
+            ),
+          ),
+        ).join(' → ')
+      : trip.destination;
+
+    const nights = hotel?.nights ?? hotel?.hotelDetails?.totalNights;
+    const activityCount = allItems.filter(
+      (it) => it.type !== 'flight' && it.type !== 'hotel',
+    ).length;
+
+    return [
+      {
+        key: 'flights',
+        icon: 'flight',
+        label: flights.length > 1 ? 'Flights (Round Trip)' : 'Flights',
+        detail: `${route} • ${numTravelers} ${numTravelers === 1 ? 'passenger' : 'passengers'}`,
+        amount: trip.costs.flights || 0,
+      },
+      {
+        key: 'accommodation',
+        icon: 'hotel',
+        label: 'Accommodation',
+        detail: [hotel?.hotelDetails?.name ?? hotel?.title, nights ? `${nights} nights` : null]
+          .filter(Boolean)
+          .join(' • ') || 'No stay booked yet',
+        amount: trip.costs.accommodation || 0,
+      },
+      {
+        key: 'activities',
+        icon: 'local_activity',
+        label: 'Activities & Dining',
+        detail: `${activityCount} planned ${activityCount === 1 ? 'stop' : 'stops'} across ${trip.days.length} ${trip.days.length === 1 ? 'day' : 'days'}`,
+        amount: trip.costs.activities || 0,
+      },
+    ];
+  }, [trip, numTravelers]);
 
   // If we've just been redirected back from Stripe (success_url includes
   // ?session_id=...), verify the payment actually went through before
@@ -90,7 +163,15 @@ export const FinalizePayView: React.FC<FinalizePayViewProps> = ({
               }));
             }
           } else {
-            setError('Payment was not completed.');
+            // cancel_url is the same page as success_url, so simply backing
+            // out of Stripe's page landed here too. Reporting that as a flat
+            // "Payment was not completed." error made a deliberate cancel look
+            // like a failure.
+            setError(
+              data.payment_status === 'unpaid'
+                ? 'Checkout was cancelled — nothing has been charged.'
+                : `Payment is ${data.payment_status}. Nothing has been charged yet.`,
+            );
           }
         },
       )
@@ -127,28 +208,32 @@ export const FinalizePayView: React.FC<FinalizePayViewProps> = ({
             isCurrentUser: !!m.isCurrentUser,
           })),
           split: isSplitGroup,
-          currency: 'usd',
+          // Stripe wants a lowercase ISO code, but it must be the trip's
+          // actual currency — hardcoding 'usd' charged e.g. a ¥-priced trip
+          // as if the yen figures were dollars.
+          currency: currency.toLowerCase(),
           success_url: here,
           cancel_url: here,
         }),
       });
       if (!res.ok) throw new Error(`Payment setup failed (${res.status})`);
-      const data: { sessions: CheckoutSessionInfo[] } = await res.json();
-      setMemberSessions(data.sessions);
+      const data: { sessions?: CheckoutSessionInfo[] } = await res.json();
+      const sessions = data.sessions ?? [];
+      setMemberSessions(sessions);
 
-      const mine =
-        data.sessions.find((s) => s.is_current_user) ?? data.sessions[0];
+      const mine = sessions.find((s) => s.is_current_user) ?? sessions[0];
       if (!mine) throw new Error('No payment session was created for you.');
 
       // Stripe's Checkout page is a full page navigation away from this
       // app, which wipes all in-memory React state on the way back — not
-      // just `trip`, but also App.tsx's separate hotelSearchParams state
-      // (destId/checkin/checkout/etc. for "Change Accommodation"). Both
-      // get bundled together here so App.tsx can restore the full picture,
-      // not just the trip, once Stripe redirects to success_url.
+      // just `trip`, but also App.tsx's separate search/session state.
+      // hotelSearchParams was already handled; flightSearchParams and
+      // chatSessionId had the same problem, leaving "Change Flight" with an
+      // empty origin/destination and the AI co-pilot on a fresh, contextless
+      // server session after paying.
       sessionStorage.setItem(
         'pendingPaymentTrip',
-        JSON.stringify({ trip, hotelSearchParams }),
+        JSON.stringify({ trip, hotelSearchParams, flightSearchParams, chatSessionId }),
       );
 
       // Hand off to Stripe's hosted checkout page for the current user's
@@ -224,79 +309,38 @@ export const FinalizePayView: React.FC<FinalizePayViewProps> = ({
                 Trip Summary
               </h2>
               <span className="text-xs font-semibold bg-[#e7e8e9] text-[#424754] px-3.5 py-1 rounded-full">
-                {trip.destination.includes('Tokyo')
-                  ? 'Tokyo Exploration'
-                  : 'Summer in Kyoto'}
+                {/* Was: destination.includes('Tokyo') ? 'Tokyo Exploration' :
+                    'Summer in Kyoto' — i.e. every non-Tokyo trip in the world
+                    was labelled "Summer in Kyoto". */}
+                {trip.title || trip.destination}
               </span>
             </div>
 
             {/* Itemized List */}
             <div className="flex flex-col gap-3">
-              {/* Flight */}
-              <div className="flex items-center justify-between p-3.5 hover:bg-[#f8f9fa] rounded-xl transition-colors">
-                <div className="flex items-center gap-3.5">
-                  <div className="w-11 h-11 rounded-full bg-[#d8e2ff] flex items-center justify-center text-[#001a42] shrink-0">
-                    <span className="material-symbols-outlined text-[22px]">
-                      flight
-                    </span>
+              {lineItems.map((line) => (
+                <div
+                  key={line.key}
+                  className="flex items-center justify-between p-3.5 hover:bg-[#f8f9fa] rounded-xl transition-colors"
+                >
+                  <div className="flex items-center gap-3.5">
+                    <div className="w-11 h-11 rounded-full bg-[#d8e2ff] flex items-center justify-center text-[#001a42] shrink-0">
+                      <span className="material-symbols-outlined text-[22px]">
+                        {line.icon}
+                      </span>
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold text-[#191c1d]">
+                        {line.label}
+                      </p>
+                      <p className="text-xs text-[#727785]">{line.detail}</p>
+                    </div>
                   </div>
-                  <div>
-                    <p className="text-sm font-semibold text-[#191c1d]">
-                      Flights (Round Trip)
-                    </p>
-                    <p className="text-xs text-[#727785]">
-                      SFO to NRT • {numTravelers} Passengers
-                    </p>
-                  </div>
+                  <p className="text-base font-semibold text-[#191c1d]">
+                    {money(line.amount)}
+                  </p>
                 </div>
-                <p className="text-base font-semibold text-[#191c1d]">
-                  $850.00
-                </p>
-              </div>
-
-              {/* Hotel */}
-              <div className="flex items-center justify-between p-3.5 hover:bg-[#f8f9fa] rounded-xl transition-colors">
-                <div className="flex items-center gap-3.5">
-                  <div className="w-11 h-11 rounded-full bg-[#d8e2ff] flex items-center justify-center text-[#001a42] shrink-0">
-                    <span className="material-symbols-outlined text-[22px]">
-                      hotel
-                    </span>
-                  </div>
-                  <div>
-                    <p className="text-sm font-semibold text-[#191c1d]">
-                      Accommodations
-                    </p>
-                    <p className="text-xs text-[#727785]">
-                      Keio Plaza Hotel Stay • 5 Nights
-                    </p>
-                  </div>
-                </div>
-                <p className="text-base font-semibold text-[#191c1d]">
-                  $1,200.00
-                </p>
-              </div>
-
-              {/* Attractions */}
-              <div className="flex items-center justify-between p-3.5 hover:bg-[#f8f9fa] rounded-xl transition-colors">
-                <div className="flex items-center gap-3.5">
-                  <div className="w-11 h-11 rounded-full bg-[#d8e2ff] flex items-center justify-center text-[#001a42] shrink-0">
-                    <span className="material-symbols-outlined text-[22px]">
-                      local_activity
-                    </span>
-                  </div>
-                  <div>
-                    <p className="text-sm font-semibold text-[#191c1d]">
-                      Attractions & Tours
-                    </p>
-                    <p className="text-xs text-[#727785]">
-                      teamLab & Guided Temple Tour Pass
-                    </p>
-                  </div>
-                </div>
-                <p className="text-base font-semibold text-[#191c1d]">
-                  $450.00
-                </p>
-              </div>
+              ))}
             </div>
 
             {/* Total */}
@@ -306,14 +350,11 @@ export const FinalizePayView: React.FC<FinalizePayViewProps> = ({
                   Total Trip Cost
                 </p>
                 <p className="text-[11px] text-[#727785] mt-0.5">
-                  Includes taxes & fees
+                  Estimated — includes taxes & fees where known
                 </p>
               </div>
               <p className="font-bold text-3xl md:text-4xl text-[#191c1d]">
-                $
-                {totalCost.toLocaleString('en-US', {
-                  minimumFractionDigits: 2,
-                })}
+                {money(totalCost)}
               </p>
             </div>
           </div>
@@ -325,9 +366,9 @@ export const FinalizePayView: React.FC<FinalizePayViewProps> = ({
               auto_awesome
             </span>
             <p className="text-xs md:text-sm text-[#424754] leading-relaxed relative z-10">
-              This total is within your estimated budget. Splitting this bill
-              evenly among {numTravelers} travelers results in an optimal
-              cost-per-person for this itinerary class.
+              {trip.budget
+                ? `Your stated budget is ${money(trip.budget * numTravelers)} for the group. This plan comes to ${money(totalCost)}, or ${money(perPersonShare)} each when split evenly among ${numTravelers} ${numTravelers === 1 ? 'traveler' : 'travelers'}.`
+                : `This plan comes to ${money(totalCost)}, or ${money(perPersonShare)} each when split evenly among ${numTravelers} ${numTravelers === 1 ? 'traveler' : 'travelers'}.`}
             </p>
           </div>
         </section>
@@ -368,9 +409,18 @@ export const FinalizePayView: React.FC<FinalizePayViewProps> = ({
             {/* Group Members List (when Split is active) */}
             {isSplitGroup && (
               <div className="flex flex-col gap-2.5 mb-6 animate-in fade-in duration-200">
-                <p className="text-[11px] font-semibold text-[#727785] uppercase tracking-wider mb-1">
-                  Dividing evenly by {numTravelers}
-                </p>
+                <div className="flex items-center justify-between mb-1">
+                  <p className="text-[11px] font-semibold text-[#727785] uppercase tracking-wider">
+                    Dividing evenly by {numTravelers}
+                  </p>
+                  <button
+                    onClick={() => setIsInviteModalOpen(true)}
+                    className="text-[11px] font-semibold text-[#0058be] hover:text-[#2170e4] cursor-pointer flex items-center gap-1"
+                  >
+                    <span className="material-symbols-outlined text-[14px]">person_add</span>
+                    Invite
+                  </button>
+                </div>
 
                 {trip.members.map((member) => {
                   const session = sessionFor(member.id);
@@ -425,11 +475,20 @@ export const FinalizePayView: React.FC<FinalizePayViewProps> = ({
                         </div>
                       </div>
                       <p className="text-sm font-semibold text-[#191c1d]">
-                        ${perPersonShare.toFixed(2)}
+                        {money(perPersonShare)}
                       </p>
                     </div>
                   );
                 })}
+                <InviteFriendsModal
+                  isOpen={isInviteModalOpen}
+                  onClose={() => setIsInviteModalOpen(false)}
+                  members={trip.members}
+                  currentUserId={trip.members.find((m) => m.isCurrentUser)?.id ?? ''}
+                  tripId={trip.id}
+                  onAddMember={(member) => onUpdateMembers([...trip.members, member])}
+                  onRemoveMember={(memberId) => onUpdateMembers(trip.members.filter((m) => m.id !== memberId))}
+                />
               </div>
             )}
 
@@ -480,8 +539,8 @@ export const FinalizePayView: React.FC<FinalizePayViewProps> = ({
                       </span>
                       <span>
                         {isSplitGroup
-                          ? `Confirm & Pay Your Share ($${perPersonShare.toFixed(2)})`
-                          : `Confirm & Pay Full ($${totalCost.toFixed(2)})`}
+                          ? `Confirm & Pay Your Share (${money(perPersonShare)})`
+                          : `Confirm & Pay Full (${money(totalCost)})`}
                       </span>
                     </>
                   )}

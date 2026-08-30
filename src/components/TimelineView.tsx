@@ -4,6 +4,8 @@ import React, { useState } from 'react';
 import { Reorder, useDragControls } from 'motion/react';
 import { Trip, TimelineItem } from '../types';
 import { isFixedItem } from '../utils/recalculateSchedule';
+import { currencySymbol } from '../currency';
+import { tripTotal } from '../utils/costs';
 import { TimelineLoadingView } from './TimelineLoadingView';
 
 interface TimelineViewProps {
@@ -31,15 +33,27 @@ const getCategoryIcon = (type: string, tag: string) => {
     case 'nightlife':
       return 'nightlife';
     case 'culture':
+      return 'museum';
+    // 'nature' had no case at all, so parks/gardens fell through to the generic
+    // pin while 'culture' wrongly took the park icon.
+    case 'nature':
       return 'park';
     case 'shopping':
       return 'shopping_bag';
     case 'activity':
       return 'local_activity';
     default:
-      if (tag.toLowerCase().includes('market')) return 'storefront';
+      if ((tag || '').toLowerCase().includes('market')) return 'storefront';
       return 'location_on';
   }
+};
+
+const TRANSIT_ICON: Record<string, string> = {
+  subway: 'train',
+  train: 'train',
+  walk: 'directions_walk',
+  bus: 'directions_bus',
+  taxi: 'local_taxi',
 };
 
 // Alternating segments of the day: fixed anchors (flight/hotel) and draggable runs
@@ -88,6 +102,11 @@ const TimelineItemCard: React.FC<TimelineItemCardProps> = ({
   dragHandle,
 }) => {
   const iconName = getCategoryIcon(item.type, item.tag);
+  // Flights and hotels are bookings, not free-form stops. App.handleDeleteItem
+  // explicitly refuses to delete them and EditActivityModal can't express a
+  // flight/hotel change, so showing Edit/Delete here promised actions that
+  // silently did nothing. Those cards carry their own "Change …" button.
+  const canEditOrDelete = item.type !== 'flight' && item.type !== 'hotel';
 
   return (
     <>
@@ -117,20 +136,24 @@ const TimelineItemCard: React.FC<TimelineItemCardProps> = ({
                 {item.time}
               </span>
               <div className="flex items-center opacity-70 group-hover:opacity-100 transition-opacity">
-                <button
-                  onClick={() => onEditItem(item)}
-                  className="text-[#727785] hover:text-[#0058be] hover:bg-[#f3f4f5] p-1.5 rounded-full transition-colors"
-                  title="Edit activity"
-                >
-                  <span className="material-symbols-outlined text-[18px]">edit</span>
-                </button>
-                <button
-                  onClick={() => onDeleteItem(item.id)}
-                  className="text-[#727785] hover:text-[#ba1a1a] hover:bg-[#ffdad6]/40 p-1.5 rounded-full transition-colors"
-                  title="Remove activity"
-                >
-                  <span className="material-symbols-outlined text-[18px]">delete</span>
-                </button>
+                {canEditOrDelete && (
+                  <>
+                    <button
+                      onClick={() => onEditItem(item)}
+                      className="text-[#727785] hover:text-[#0058be] hover:bg-[#f3f4f5] p-1.5 rounded-full transition-colors"
+                      title="Edit activity"
+                    >
+                      <span className="material-symbols-outlined text-[18px]">edit</span>
+                    </button>
+                    <button
+                      onClick={() => onDeleteItem(item.id)}
+                      className="text-[#727785] hover:text-[#ba1a1a] hover:bg-[#ffdad6]/40 p-1.5 rounded-full transition-colors"
+                      title="Remove activity"
+                    >
+                      <span className="material-symbols-outlined text-[18px]">delete</span>
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -181,7 +204,10 @@ const TimelineItemCard: React.FC<TimelineItemCardProps> = ({
                 </div>
                 {item.flightDetails?.price != null && (
                   <span className="font-bold text-[#006c49] text-xs">
-                    {item.flightDetails.currency || '$'}{Number(item.flightDetails.price).toFixed(2)} / pax
+                    {/* currency holds an ISO code ("USD"), so using it raw as a
+                        prefix rendered "USD250.00". */}
+                    {currencySymbol(item.flightDetails.currency || 'USD')}
+                    {Number(item.flightDetails.price).toFixed(2)} / pax
                   </span>
                 )}
               </div>
@@ -235,7 +261,7 @@ const TimelineItemCard: React.FC<TimelineItemCardProps> = ({
               <div className="pt-2 border-t border-[#e1e3e4] flex items-center justify-between">
                 <span className="text-[11px] font-semibold text-[#006c49]">
                   {item.hotelDetails?.pricePerNight != null
-                    ? `${item.hotelDetails.currency || '$'}${Number(item.hotelDetails.pricePerNight).toFixed(2)} / night`
+                    ? `${currencySymbol(item.hotelDetails.currency || 'USD')}${Number(item.hotelDetails.pricePerNight).toFixed(2)} / night`
                     : 'Confirmed Booking'}
                 </span>
                 <div className="flex gap-2">
@@ -262,15 +288,12 @@ const TimelineItemCard: React.FC<TimelineItemCardProps> = ({
               className="flex items-center gap-2 text-[#727785] text-xs font-medium bg-[#f3f4f5] hover:bg-[#e7e8e9] hover:text-[#191c1d] px-3.5 py-1.5 rounded-full transition-all cursor-pointer w-fit shadow-2xs group/btn"
             >
               <span className="material-symbols-outlined text-[16px] text-[#0058be]">
-                {item.transitToNext.type === 'subway'
-                  ? 'train'
-                  : item.transitToNext.type === 'train'
-                  ? 'train'
-                  : item.transitToNext.type === 'walk'
-                  ? 'directions_walk'
-                  : 'directions_bus'}
+                {TRANSIT_ICON[item.transitToNext.type] ?? 'directions_bus'}
               </span>
-              <span>{item.transitToNext.description}</span>
+              <span>
+                {item.transitToNext.description ||
+                  `${item.transitToNext.type} to next stop`}
+              </span>
               <span className="material-symbols-outlined text-[16px] group-hover/btn:translate-y-0.5 transition-transform">
                 {isTransitExpanded ? 'expand_less' : 'expand_more'}
               </span>
@@ -278,16 +301,31 @@ const TimelineItemCard: React.FC<TimelineItemCardProps> = ({
 
             {isTransitExpanded && (
               <div className="bg-white p-3 rounded-xl border border-[#e1e3e4] shadow-xs text-xs text-[#424754] space-y-1.5 animate-in fade-in duration-200">
+                {/* This panel used to be two hardcoded lines about Tokyo IC
+                    cards (Suica / Pasmo) and a made-up "Transfer time: 4 mins",
+                    shown for every leg of every trip in every city — including
+                    walking legs. Render only what the route data actually
+                    says. */}
                 <div className="flex justify-between font-medium">
-                  <span className="text-[#0058be]">Route Navigation</span>
-                  <span className="text-[#006c49]">Optimal Route</span>
+                  <span className="text-[#0058be]">
+                    {item.transitToNext.type === 'walk' ? 'Walking route' : 'Route navigation'}
+                  </span>
+                  <span className="capitalize text-[#006c49]">{item.transitToNext.type}</span>
                 </div>
-                <p>
-                  • Board from departure platform with IC Card (Suica / Pasmo).
-                </p>
-                <p>
-                  • Transfer time: Approx. 4 mins. Frequency: Every 5-8 mins.
-                </p>
+                {item.transitToNext.duration && (
+                  <p>• Estimated time: {item.transitToNext.duration}</p>
+                )}
+                {item.transitToNext.distance && (
+                  <p>• Distance: {item.transitToNext.distance}</p>
+                )}
+                {item.transitToNext.description && (
+                  <p>• {item.transitToNext.description}</p>
+                )}
+                {!item.transitToNext.duration &&
+                  !item.transitToNext.distance &&
+                  !item.transitToNext.description && (
+                    <p className="text-[#727785]">No route details available yet.</p>
+                  )}
               </div>
             )}
           </div>
@@ -359,6 +397,19 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
   }
 
   const segments = buildSegments(currentDay.items);
+
+  // One number, one currency, one source of truth. This box used to print the
+  // big figure as accommodation + flights (silently omitting activities) and
+  // then a *second*, different figure next to it (costs.usdEstimate), so the
+  // card contradicted itself and neither value matched what Finalize & Pay
+  // charged.
+  const symbol = currencySymbol(trip.costs.currency || 'USD');
+  const total = tripTotal(trip.costs);
+  const costRows: { label: string; value: number }[] = [
+    { label: 'Accommodation', value: trip.costs.accommodation || 0 },
+    { label: 'Flights', value: trip.costs.flights || 0 },
+    { label: 'Activities & dining', value: trip.costs.activities || 0 },
+  ];
 
   // Reassemble the FULL day array after a run reorders (fixed items & other runs untouched)
   const handleRunReorder = (startIndex: number, runLength: number, reordered: TimelineItem[]) => {
@@ -455,23 +506,26 @@ export const TimelineView: React.FC<TimelineViewProps> = ({
               <span className="text-[#727785] font-medium text-sm">Estimated Total Cost</span>
               <div className="text-right">
                 <span className="font-medium text-2xl text-[#191c1d]">
-                  ${(trip.costs.accommodation + trip.costs.flights).toLocaleString()}
+                  {symbol}
+                  {total.toLocaleString(undefined, { maximumFractionDigits: 0 })}
                 </span>
                 <span className="text-sm font-normal text-[#727785] ml-2">
-                  (${trip.costs.usdEstimate.toFixed(2)})
+                  for {trip.travelersCount || 1}{' '}
+                  {(trip.travelersCount || 1) === 1 ? 'traveler' : 'travelers'}
                 </span>
               </div>
             </div>
 
             <div className="flex flex-col gap-2 pt-2 border-t border-[#e1e3e4]">
-              <div className="flex justify-between text-xs text-[#727785]">
-                <span>Accommodation</span>
-                <span className="font-medium text-[#191c1d]">${trip.costs.accommodation.toLocaleString()}</span>
-              </div>
-              <div className="flex justify-between text-xs text-[#727785]">
-                <span>Flights</span>
-                <span className="font-medium text-[#191c1d]">${trip.costs.flights.toLocaleString()}</span>
-              </div>
+              {costRows.map((row) => (
+                <div key={row.label} className="flex justify-between text-xs text-[#727785]">
+                  <span>{row.label}</span>
+                  <span className="font-medium text-[#191c1d]">
+                    {symbol}
+                    {row.value.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                  </span>
+                </div>
+              ))}
             </div>
 
             <button

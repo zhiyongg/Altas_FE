@@ -1,7 +1,10 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import {
   Trip,
   TimelineItem,
+  TransitInfo,
+  HotelDetails,
+  FlightDetails,
   ChatMessage,
   FlightOption,
   StayOption,
@@ -9,10 +12,12 @@ import {
   ActivityOption,
   NavTab,
 } from './types';
-import { recalculateSchedule } from './utils/recalculateSchedule';
+import { recalculateSchedule, fillMissingTransit } from './utils/recalculateSchedule';
 import { recalculateRoute } from './utils/routeApi';
 import { timeToMinutes } from './utils/time';
+import { tripTotal } from './utils/costs';
 import { currencySymbol } from './currency';
+import { API_BASE } from './api';
 import {
   initialTokyoTrip as mockTokyoTrip,
   initialChatMessages,
@@ -32,7 +37,7 @@ import { NewTripModal } from './components/NewTripModal';
 import { ArchiveView } from './components/ArchiveView';
 import { ExploreView } from './components/ExploreView';
 
-const API_BASE_URL = 'http://127.0.0.1:8000';
+const API_BASE_URL = API_BASE;
 
 // agent.py's Flight.dep_time/arr_time (used for apiData.flights, the initial
 // generated flights) sometimes comes back as a full ISO datetime
@@ -62,6 +67,108 @@ const KIND_TO_TYPE: Record<string, TimelineItem['type']> = {
   shopping: 'shopping',
   nightlife: 'nightlife',
   activity: 'activity',
+  // "hotel_checkin" is the real booking moment -> rich, fixed hotel card.
+  // Plain "hotel" is the planner's "Return to Hotel" rest beat, which must
+  // stay a normal (draggable, non-anchor) item; mapping it to 'hotel' turned
+  // every rest beat into a booking card with a "Change Hotel" button.
+  hotel_checkin: 'hotel',
+  hotel: 'activity',
+};
+
+// Backend transit modes -> TransitInfo['type']. Centralized because the three
+// places that used to do this inline disagreed with each other, and one of them
+// emitted 'drive', which isn't a member of the union at all.
+const TRANSIT_MODE_TO_TYPE: Record<string, TransitInfo['type']> = {
+  walk: 'walk',
+  walking: 'walk',
+  train: 'train',
+  rail: 'train',
+  subway: 'subway',
+  metro: 'subway',
+  bus: 'bus',
+  transit: 'subway',
+  taxi: 'taxi',
+  drive: 'taxi',
+  driving: 'taxi',
+  car: 'taxi',
+};
+
+const toTransitInfo = (raw: any): TransitInfo | undefined => {
+  if (!raw) return undefined;
+  const mode = String(raw.mode ?? '').toLowerCase();
+  return {
+    type: TRANSIT_MODE_TO_TYPE[mode] ?? 'bus',
+    description: raw.description || '',
+    duration:
+      raw.duration ??
+      (raw.duration_min != null ? `${raw.duration_min} mins` : undefined),
+    distance: raw.distance ?? undefined,
+  };
+};
+
+// Chronological ordering for a day's items. String comparison was used before,
+// which sorts "9:30" after "10:00" whenever the backend omits zero-padding.
+const byTime = (a: TimelineItem, b: TimelineItem) =>
+  timeToMinutes(a.time) - timeToMinutes(b.time);
+
+// Add minutes to an "HH:MM" time, capped at 23:59 same-day (a genuine
+// midnight-rollover arrival is a separate edge case from what this fixes).
+const addMinutesCapped = (hhmm: string, mins: number): string => {
+  const total = Math.min(23 * 60 + 59, timeToMinutes(hhmm) + mins);
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+};
+
+// A hotel check-in card can't actually happen before the guest lands. If the
+// arrival flight touches down after the property's nominal check-in time,
+// the card's time becomes arrival + 1hr instead of the nominal time —
+// otherwise a night arrival (e.g. 23:30) sorted the check-in card (default
+// 15:00) BEFORE the flight that brings the guest into the city.
+const earliestCheckInAfterArrival = (nominalCheckIn: string, arrTime: string): string => {
+  const earliestPossible = addMinutesCapped(arrTime, 60);
+  return timeToMinutes(earliestPossible) > timeToMinutes(nominalCheckIn)
+    ? earliestPossible
+    : nominalCheckIn;
+};
+
+// Activity picker categories -> TimelineItem type. The old inline ternary only
+// understood "Dining" and mapped "Nature" to 'culture', silently dropping the
+// Culture/Shopping/Tickets categories the modal offers.
+const ACTIVITY_CATEGORY_TO_TYPE: Record<string, TimelineItem['type']> = {
+  dining: 'dining',
+  food: 'dining',
+  restaurant: 'dining',
+  culture: 'culture',
+  museum: 'culture',
+  nature: 'nature',
+  park: 'nature',
+  shopping: 'shopping',
+  nightlife: 'nightlife',
+  tickets: 'activity',
+  tours: 'activity',
+};
+
+const activityTypeFor = (category?: string): TimelineItem['type'] =>
+  ACTIVITY_CATEGORY_TO_TYPE[String(category ?? '').trim().toLowerCase()] ?? 'activity';
+
+// "$$", "Free", "From RM 120" — pull out a usable number, or 0 when the label
+// carries no real amount. Adding a flat 6,000 per activity (the old behavior)
+// made the cost summary fiction.
+const parsePriceLabel = (label?: string): number => {
+  if (!label) return 0;
+  const match = label.replace(/,/g, '').match(/\d+(\.\d+)?/);
+  return match ? Number(match[0]) : 0;
+};
+
+// Next sensible start time for an appended activity: 90 minutes after the
+// day's last flexible stop, capped at 22:00. Hardcoding '19:30' meant every
+// added activity collided with whatever already sat at that hour.
+const nextFreeSlot = (items: TimelineItem[]): string => {
+  const flexible = items.filter((it) => it.type !== 'flight' && it.type !== 'hotel');
+  const source = flexible.length > 0 ? flexible : items;
+  if (source.length === 0) return '10:00';
+  const latest = Math.max(...source.map((it) => timeToMinutes(it.time)));
+  const minutes = Math.min(latest + 90, 22 * 60);
+  return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
 };
 
 const formatActivityDetails = (
@@ -103,6 +210,20 @@ const mapChatItineraryToTrip = (itinerary: any, currentTrip: Trip): Trip => {
   const normalized = normalizeChatItinerary(itinerary) || { days: [] };
   const itineraryDays = Array.isArray(normalized.days) ? normalized.days : [];
 
+  // A server sync only carries the planner's own fields, so everything the
+  // client owns (stable ids, images, prices, booking metadata) used to be
+  // thrown away on every chat message / edit / delete. Index the current trip
+  // by title so those extras survive. Stable ids matter especially: the old
+  // `chat-...-${Date.now()}` ids changed on every sync, remounting every card
+  // and resetting drag/expanded state.
+  const previousByTitle = new Map<string, TimelineItem>();
+  currentTrip.days.forEach((day) =>
+    day.items.forEach((item) => {
+      const key = item.title?.trim().toLowerCase();
+      if (key && !previousByTitle.has(key)) previousByTitle.set(key, item);
+    }),
+  );
+
   return {
     ...currentTrip,
     title: normalized.title || normalized.trip_overview?.title || currentTrip.title,
@@ -112,68 +233,85 @@ const mapChatItineraryToTrip = (itinerary: any, currentTrip: Trip): Trip => {
     budget: normalized.budget ?? currentTrip.budget,
     vibes: normalized.vibes || currentTrip.vibes,
     days: itineraryDays.map((day: any, dayIndex: number) => {
-      
       // 1. Map the new schedule from the chat response
-      let newItems = (day.schedule || []).map((entry: any, itemIndex: number): TimelineItem => ({
-        id: `chat-${day.day ?? dayIndex}-${itemIndex}-${Date.now()}`,
-        time: entry.time || '12:00',
-        // Ensure the new "hotel_checkin" kind maps properly to the frontend's hotel type
-        type: entry.kind === 'meal' ? 'dining' : (entry.kind === 'hotel' || entry.kind === 'hotel_checkin') ? 'hotel' : entry.kind === 'flight' ? 'flight' : 'activity',
-        tag: entry.kind ? String(entry.kind).charAt(0).toUpperCase() + String(entry.kind).slice(1) : 'Activity',
-        title: entry.name || entry.location?.name || 'Planned activity',
-        subtitle: entry.location?.address || entry.location?.name || '',
-        rating: entry.rating ?? undefined,
-        reviewsCount: entry.reviews_count ?? entry.reviewsCount ?? undefined,
-        details: formatActivityDetails(
-          entry.rating,
-          entry.duration_min ?? entry.duration_minutes ?? entry.duration ?? entry.estimated_duration,
-        ),
-        mapCoords: entry.location
-          ? { x: 0, y: 0, lat: entry.location.latitude, lng: entry.location.longitude }
-          : undefined,
-        transitToNext: entry.transit_to_next
-          ? {
-              type:
-                entry.transit_to_next.mode === 'walk' ? 'walk'
-                  : entry.transit_to_next.mode === 'train' || entry.transit_to_next.mode === 'subway' ? 'train'
-                  : entry.transit_to_next.mode === 'drive' || entry.transit_to_next.mode === 'car' ? 'drive'
-                  : entry.transit_to_next.mode === 'taxi' ? 'taxi'
-                  : 'bus',
-              description: entry.transit_to_next.description || '',
-            }
-          : undefined,
-      }));
+      const newItems: TimelineItem[] = (day.schedule || []).map(
+        (entry: any, itemIndex: number): TimelineItem => {
+          const title = entry.name || entry.location?.name || 'Planned activity';
+          const previous = previousByTitle.get(title.trim().toLowerCase());
+          const kind = entry.kind ? String(entry.kind) : '';
+          const hasCoords = entry.location?.latitude != null && entry.location?.longitude != null;
 
-      // ── FIX: Preserve & Re-inject Flights and Hotel Metadata ──
+          return {
+            id: previous?.id ?? `chat-${dayIndex}-${itemIndex}`,
+            time: toHHMM(entry.time, previous?.time ?? '12:00'),
+            type: KIND_TO_TYPE[kind] ?? 'activity',
+            tag:
+              kind === 'hotel' ? 'Rest'
+              : kind === 'hotel_checkin' ? 'Hotel Check-in'
+              : kind ? kind.charAt(0).toUpperCase() + kind.slice(1)
+              : previous?.tag ?? 'Activity',
+            title,
+            subtitle: entry.location?.address || entry.location?.name || previous?.subtitle || '',
+            image: previous?.image,
+            price: previous?.price,
+            priceLabel: previous?.priceLabel,
+            rating: entry.rating ?? previous?.rating,
+            reviewsCount: entry.reviews_count ?? entry.reviewsCount ?? previous?.reviewsCount,
+            details:
+              formatActivityDetails(
+                entry.rating,
+                entry.duration_min ?? entry.duration_minutes ?? entry.duration ?? entry.estimated_duration,
+              ) ?? previous?.details,
+            mapCoords: hasCoords
+              ? { x: 0, y: 0, lat: entry.location.latitude, lng: entry.location.longitude }
+              : previous?.mapCoords,
+            transitToNext: toTransitInfo(entry.transit_to_next),
+            // Booking metadata the chat layer knows nothing about
+            terminal: previous?.terminal,
+            bookingRef: previous?.bookingRef,
+            nights: previous?.nights,
+            flightDetails: previous?.flightDetails,
+            hotelDetails: previous?.hotelDetails,
+          };
+        },
+      );
+
+      // 2. Carry over client-only anchors (flights + the synthesized hotel
+      //    check-in/check-out cards). Only the flights were preserved before,
+      //    so the hotel cards — and with them the "Change Hotel" entry point —
+      //    disappeared after the first chat message. Re-injection is guarded by
+      //    title so an anchor the server already returned isn't duplicated.
       const existingDay = currentTrip.days[dayIndex];
       if (existingDay) {
-        // Re-inject flights from the previous state back into the new timeline
-        const existingFlights = existingDay.items.filter(item => item.type === 'flight');
-        existingFlights.forEach(flight => {
-          if (flight.flightDetails?.direction === 'return') {
-            newItems.push(flight);
-          } else {
-            newItems.unshift(flight);
-          }
-        });
+        const presentTitles = new Set(newItems.map((it) => it.title.trim().toLowerCase()));
+        existingDay.items
+          .filter(
+            (item) =>
+              (item.type === 'flight' || item.type === 'hotel') &&
+              !presentTitles.has(item.title.trim().toLowerCase()),
+          )
+          .forEach((anchor) => newItems.push(anchor));
 
-        // Copy over the rich hotelDetails (pricing, room type) so the new hotel nodes don't lose their data
-        const existingHotelMetadata = existingDay.items.find(item => item.hotelDetails)?.hotelDetails;
-        if (existingHotelMetadata) {
-          newItems.forEach(item => {
-            if (item.type === 'hotel') {
-              item.hotelDetails = existingHotelMetadata;
-            }
+        // Rich hotel pricing/room data lives on the boundary cards — re-attach
+        // it to any hotel node that came back from the server without it.
+        const hotelMetadata =
+          existingDay.items.find((item) => item.hotelDetails)?.hotelDetails ??
+          currentTrip.days.flatMap((d) => d.items).find((item) => item.hotelDetails)?.hotelDetails;
+        if (hotelMetadata) {
+          newItems.forEach((item) => {
+            if (item.type === 'hotel' && !item.hotelDetails) item.hotelDetails = hotelMetadata;
           });
         }
       }
 
-      // Sort items chronologically by their HH:MM time string to ensure injected flights fit in perfectly
-      newItems.sort((a: any, b: any) => String(a.time).localeCompare(String(b.time)));
+      newItems.sort(byTime);
 
+      // dayNumber/dateLabel are derived from the array index, not from
+      // `day.day`: the backend numbers days from 1, so `day.day + 1` produced
+      // "Day 2" for the first day and disagreed with the generation path.
       return {
-        dayNumber: Number(day.day ?? dayIndex) + 1,
-        dateLabel: `Day ${Number(day.day ?? dayIndex) + 1} • ${day.date || ''}`,
+        dayNumber: dayIndex + 1,
+        dateLabel: `Day ${dayIndex + 1} • ${day.date || ''}`,
         items: newItems,
       };
     }),
@@ -307,58 +445,98 @@ export const App: React.FC = () => {
   // labels. Falls back through: active day's first located stop -> any
   // day's first located stop -> undefined (search still works, just
   // without proximity ranking).
-  const getActivitySearchOrigin = (): { lat?: number; lng?: number } => {
+  // Memoized so the two props it feeds AddActivityModal come from one object
+  // identity per render; it used to be a plain function called twice inline in
+  // the JSX, which walked every day of the trip twice on every single render.
+  const activitySearchOrigin = useMemo((): { lat?: number; lng?: number } => {
     const findCoords = (day: (typeof trip.days)[number] | undefined) =>
       day?.items.find((it) => it.mapCoords?.lat != null && it.mapCoords?.lng != null)?.mapCoords;
 
     const coords = findCoords(trip.days[activeDayIndex]) ?? trip.days.map(findCoords).find(Boolean);
     return { lat: coords?.lat, lng: coords?.lng };
-  };
+  }, [trip.days, activeDayIndex]);
 
   // Switch Flight
-  const handleSelectFlight = async (flight: FlightOption) => {
+  //
+  // The user picks ONE leg in the modal, so only that leg may change. The old
+  // version rewrote every flight item in the trip with the selected option, so
+  // choosing a new outbound also silently replaced the return flight (same
+  // carrier, same number, same times) — and then priced the whole round trip
+  // as `selectedPrice * travelers`, dropping the other leg's fare entirely.
+  const handleSelectFlight = (flight: FlightOption) => {
     setTrip((prev) => {
-      const newFlightPricePerPax = flight.price;
-      const newFlightsTotal = newFlightPricePerPax * prev.travelersCount;
+      const flightItems = prev.days.flatMap((day) => day.items).filter((it) => it.type === 'flight');
+      const outboundLeg = flightItems.find((it) => it.flightDetails?.direction !== 'return');
+      const returnLeg = flightItems.find((it) => it.flightDetails?.direction === 'return');
+
+      // Infer which leg was replaced from the route. Falls back to outbound
+      // when the codes don't identify a leg (e.g. placeholder airports).
+      const depCode = flight.departure.airport_code;
+      const targetDirection: 'outbound' | 'return' =
+        returnLeg?.flightDetails?.depAirport === depCode &&
+        outboundLeg?.flightDetails?.depAirport !== depCode
+          ? 'return'
+          : 'outbound';
+
       const updatedDays = prev.days.map((day) => ({
         ...day,
         items: day.items.map((item) => {
           if (item.type !== 'flight') return item;
           const isReturn = item.flightDetails?.direction === 'return';
+          if ((isReturn ? 'return' : 'outbound') !== targetDirection) return item;
+
+          // Rebuild flightDetails in full rather than merging into a possibly
+          // missing object — previously an item without flightDetails kept
+          // `undefined` and the card fell back to "Airline Carrier / FLIGHT".
+          const flightDetails: FlightDetails = {
+            ...item.flightDetails,
+            direction: isReturn ? 'return' : 'outbound',
+            carrier: flight.airline,
+            flightNumber: flight.flight_number,
+            depAirport: flight.departure.airport_code,
+            arrAirport: flight.arrival.airport_code,
+            depTime: flight.departure.time,
+            arrTime: flight.arrival.time,
+            durationMinutes: flight.duration_minutes ?? item.flightDetails?.durationMinutes,
+            price: flight.price,
+            currency: flight.currency || item.flightDetails?.currency || prev.costs.currency,
+          };
+
           return {
             ...item,
             title: isReturn ? `Return via ${flight.airline}` : `Arrival via ${flight.airline}`,
             subtitle: `${flight.flight_number} • ${flight.departure.airport_code} to ${flight.arrival.airport_code}`,
             time: isReturn ? flight.departure.time : flight.arrival.time,
             bookingRef: `${(flight.airline_code || flight.flight_number).slice(0, 2)}-${Math.floor(1000 + Math.random() * 9000)}`,
-            terminal: 'T1',
-            flightDetails: item.flightDetails
-              ? {
-                  ...item.flightDetails,
-                  price: newFlightPricePerPax,
-                  carrier: flight.airline,
-                  flightNumber: flight.flight_number,
-                  depAirport: flight.departure.airport_code,
-                  arrAirport: flight.arrival.airport_code,
-                  arrTime: flight.arrival.time,
-                  depTime: flight.departure.time,
-                  currency: flight.currency || item.flightDetails.currency || 'USD',
-                }
-              : undefined,
+            terminal: item.terminal ?? 'T1',
+            flightDetails,
           };
-        }),
+        }).sort(byTime),
       }));
+
+      // Re-price from the resulting legs so both directions are counted once.
+      const updatedFlights = updatedDays.flatMap((day) => day.items).filter((it) => it.type === 'flight');
+      const farePerPax = (['outbound', 'return'] as const).reduce((sum, direction) => {
+        const leg = updatedFlights.find(
+          (it) => (it.flightDetails?.direction === 'return' ? 'return' : 'outbound') === direction,
+        );
+        return sum + (leg?.flightDetails?.price ?? 0);
+      }, 0);
+      const travelers = prev.travelersCount > 0 ? prev.travelersCount : 1;
+      const newCosts = { ...prev.costs, flights: farePerPax * travelers };
+
       return {
         ...prev,
         days: updatedDays,
-        costs: { ...prev.costs, flights: newFlightsTotal, usdEstimate: prev.costs.accommodation + newFlightsTotal },
+        costs: { ...newCosts, usdEstimate: tripTotal(newCosts) },
       };
     });
+
     // Add confirmation to chat
     const confirmMsg: ChatMessage = {
       id: `msg-${Date.now()}`,
       sender: 'ai',
-      text: `Updated your flight to ${flight.airline} (${flight.flight_number}) arriving at ${flight.arrival.time}. Recalculated your total budget!`,
+      text: `Updated your flight to ${flight.airline} (${flight.flight_number}) departing ${flight.departure.time} and arriving ${flight.arrival.time}. Recalculated your total budget!`,
       timestamp: 'Just now',
     };
     setChatMessages((prev) => [...prev, confirmMsg]);
@@ -367,47 +545,77 @@ export const App: React.FC = () => {
 
   // Switch Accommodation
   //
-  // BUG FIX: ChangeAccommodationModal now calls onSelectStay(stay, room) —
-  // passing the SPECIFIC room the user picked, which can differ from
-  // stay.selected_room if they expanded "View room options" and chose a
-  // different one. This used to only accept `stay` and always priced off
-  // stay.selected_room, silently ignoring the room the user actually chose.
+  // ChangeAccommodationModal calls onSelectStay(stay, room) — passing the
+  // SPECIFIC room the user picked, which can differ from stay.selected_room if
+  // they expanded "View room options" and chose a different one.
   const handleSelectAccommodation = (stay: StayOption, room: RoomOption) => {
     const locationLabel = [stay.address, stay.city].filter(Boolean).join(', ') || stay.name;
+    const schedule = stay.stay_schedule;
 
     setTrip((prev) => {
-      const updatedDays = prev.days.map((day) => ({
-        ...day,
-        items: day.items.map((item) => {
-          if (item.type !== 'hotel') return item;
-          // Preserve which boundary this card represents — don't relabel a
-          // checkout card as "Check-in" just because we're updating the stay.
-          const isCheckout = item.tag === 'Hotel Check-out';
-          return {
-            ...item,
-            title: `${isCheckout ? 'Check-out' : 'Check-in'}: ${stay.name}`,
-            subtitle: locationLabel,
-            image: stay.image_url ?? item.image,
-            hotelDetails: item.hotelDetails
-              ? {
-                  ...item.hotelDetails,
-                  name: stay.name,
-                  address: locationLabel,
-                  roomType: room.room_name,
-                  pricePerNight: room.price_per_night,
-                  totalPrice: room.total_price,
-                  currency: room.currency,
-                }
-              : item.hotelDetails,
-          };
-        }),
-      }));
+      const updatedDays = prev.days.map((day) => {
+        // Only the day actually holding the arrival flight needs clamping —
+        // other days' check-in/out cards (e.g. a mid-trip property change)
+        // aren't affected by when the flight landed.
+        const arrivalFlight = day.items.find(
+          (it) => it.type === 'flight' && it.flightDetails?.direction !== 'return',
+        );
 
-      const newAccomTotal = room.total_price;
+        return {
+          ...day,
+          items: day.items
+            .map((item) => {
+              if (item.type !== 'hotel') return item;
+              // Preserve which boundary this card represents — don't relabel a
+              // checkout card as "Check-in" just because we're updating the stay.
+              const isCheckout = item.tag === 'Hotel Check-out';
+
+              // Rebuild the whole details object: merging only name/room/price
+              // into the previous one left the OLD property's check-in time,
+              // star rating, city and night count on the card.
+              const nominalCheckIn = toHHMM(schedule?.check_in_time, item.hotelDetails?.checkIn ?? '15:00');
+              const hotelDetails: HotelDetails = {
+                ...item.hotelDetails,
+                name: stay.name,
+                address: locationLabel,
+                city: stay.city ?? item.hotelDetails?.city,
+                starRating: stay.star_rating ?? item.hotelDetails?.starRating,
+                roomType: room.room_name,
+                // A hotel card can't check in before the guest's arrival flight
+                // (on the same day) actually lands — see earliestCheckInAfterArrival.
+                checkIn: !isCheckout && arrivalFlight
+                  ? earliestCheckInAfterArrival(nominalCheckIn, arrivalFlight.flightDetails?.arrTime ?? arrivalFlight.time)
+                  : nominalCheckIn,
+                checkOut: toHHMM(schedule?.check_out_time, item.hotelDetails?.checkOut ?? '11:00'),
+                totalNights: schedule?.total_nights ?? item.hotelDetails?.totalNights,
+                pricePerNight: room.price_per_night,
+                totalPrice: room.total_price,
+                currency: room.currency || item.hotelDetails?.currency || prev.costs.currency,
+              };
+
+              return {
+                ...item,
+                title: `${isCheckout ? 'Check-out' : 'Check-in'}: ${stay.name}`,
+                subtitle: locationLabel,
+                time: isCheckout
+                  ? hotelDetails.checkOut ?? item.time
+                  : hotelDetails.checkIn ?? item.time,
+                image: stay.image_url ?? item.image,
+                nights: item.nights != null ? hotelDetails.totalNights ?? item.nights : item.nights,
+                hotelDetails,
+              };
+            })
+            // Check-in/out times can shift with the new property, so the day has
+            // to be re-sorted or the card lands out of chronological order.
+            .sort(byTime),
+        };
+      });
+
+      const newCosts = { ...prev.costs, accommodation: room.total_price || 0 };
       return {
         ...prev,
         days: updatedDays,
-        costs: { ...prev.costs, accommodation: newAccomTotal, usdEstimate: newAccomTotal + prev.costs.flights },
+        costs: { ...newCosts, usdEstimate: tripTotal(newCosts) },
       };
     });
 
@@ -457,33 +665,43 @@ export const App: React.FC = () => {
     });
   };
 
-  // Add Activity to current day — now searches and persists via the real
-  // backend (Google Places through /activity/search for the picker,
-  // /api/itinerary/item to save the chosen item) instead of only updating
-  // local state with a hardcoded mock cost bump.
-  // Add Activity to current day — now persists via the same
-  // /api/itinerary/item endpoint used for edit/delete, instead of only
-  // updating local state with a hardcoded mock cost bump.
+  // Add Activity to current day — persists via the same /api/itinerary/item
+  // endpoint used for edit/delete, then refines transit with real routing data.
   const handleAddActivity = async (activity: ActivityOption) => {
     const hasCoords = activity.latitude != null && activity.longitude != null;
+    const currentDay = trip.days[activeDayIndex];
+    const type = activityTypeFor(activity.category);
 
     const newItem: TimelineItem = {
       id: `item-${Date.now()}`,
-      time: '19:30',
-      type: activity.category === 'Dining' ? 'dining' : activity.category === 'Nature' ? 'culture' : 'activity',
-      tag: activity.category,
+      time: nextFreeSlot(currentDay?.items ?? []),
+      type,
+      tag: activity.category || 'Activity',
       title: activity.title,
       subtitle: activity.description,
       image: activity.image,
-      details: `Rating: ${activity.rating} ⭐ (${activity.reviewsCount} reviews) • Distance: ${activity.distance}`,
+      price: parsePriceLabel(activity.priceLabel) || undefined,
+      priceLabel: activity.priceLabel,
+      rating: activity.rating,
+      reviewsCount: activity.reviewsCount,
+      // Built from the parts we actually have — the old template always
+      // interpolated "(undefined reviews)" when the source had no review count.
+      details: [
+        activity.rating != null ? `Rating: ${activity.rating} ⭐` : null,
+        activity.reviewsCount != null ? `${activity.reviewsCount.toLocaleString()} reviews` : null,
+        activity.distance ? `Distance: ${activity.distance}` : null,
+      ]
+        .filter(Boolean)
+        .join(' • ') || undefined,
       mapCoords: hasCoords ? { x: 0, y: 0, lat: activity.latitude!, lng: activity.longitude! } : undefined,
-      // Placeholder — overwritten below by computeRefinedTransit whenever
-      // we actually have coordinates to route between.
-      transitToNext: { type: 'walk', description: `Walk --- 500m (6 mins) ---> ${activity.title}` },
+      // No transit placeholder: this item is appended last, and the old
+      // placeholder described travelling to the item itself ("Walk ---> X" on
+      // X's own card), which is never correct. computeRefinedTransit below
+      // fills in the real legs when coordinates allow.
     };
 
     const dayNumber = activeDayIndex + 1;
-    let persisted = false;
+    const addedCost = parsePriceLabel(activity.priceLabel) * (trip.travelersCount > 0 ? trip.travelersCount : 1);
     let resultingDayItems: TimelineItem[] | null = null;
 
     try {
@@ -496,7 +714,7 @@ export const App: React.FC = () => {
           item: {
             id: newItem.id,
             time: newItem.time,
-            kind: newItem.type === 'dining' ? 'meal' : newItem.type,
+            kind: type === 'dining' ? 'meal' : type,
             name: newItem.title,
             notes: newItem.details,
             // Backend stores this verbatim with no geocoding of its own —
@@ -509,35 +727,54 @@ export const App: React.FC = () => {
       });
       if (!response.ok) throw new Error(`Failed to add activity (${response.status})`);
       const data = await response.json();
-      if (data.itinerary?.daily_itinerary?.days) {
-        setTrip((prev) => {
-          const next = mapChatItineraryToTrip(data.itinerary.daily_itinerary, prev);
-          resultingDayItems = next.days[activeDayIndex]?.items ?? null;
-          return { ...next, costs: { ...next.costs, activities: prev.costs.activities + 6000 } };
-        });
-        persisted = true;
+      // Accept any of the itinerary shapes normalizeChatItinerary understands.
+      // Only `data.itinerary.daily_itinerary.days` was handled before, so a
+      // differently-shaped (but successful) response fell through to the
+      // "offline" branch below and added the activity a second time locally.
+      const itinerary = normalizeChatItinerary(data.itinerary ?? data);
+      if (itinerary) {
+        // Mapped against the current render's trip so the resulting items are
+        // available synchronously for the routing call. The old code assigned
+        // `resultingDayItems` from inside the setTrip updater, which React may
+        // invoke twice (StrictMode) or later than this line runs.
+        const mapped = mapChatItineraryToTrip(itinerary, trip);
+        const costs = { ...mapped.costs, activities: mapped.costs.activities + addedCost };
+        const next: Trip = { ...mapped, costs: { ...costs, usdEstimate: tripTotal(costs) } };
+        setTrip(next);
+        resultingDayItems = next.days[activeDayIndex]?.items ?? null;
       }
     } catch (error) {
       console.error('Error adding activity:', error);
     }
 
-    if (!persisted) {
-      setTrip((prev) => {
-        const updatedDays = prev.days.map((day, idx) =>
-          idx === activeDayIndex ? { ...day, items: [...day.items, newItem] } : day,
-        );
-        resultingDayItems = updatedDays[activeDayIndex]?.items ?? null;
-        return { ...prev, days: updatedDays, costs: { ...prev.costs, activities: prev.costs.activities + 6000 } };
-      });
+    if (!resultingDayItems) {
+      const updatedDays = trip.days.map((day, idx) =>
+        idx === activeDayIndex ? { ...day, items: [...day.items, newItem].sort(byTime) } : day,
+      );
+      const costs = { ...trip.costs, activities: trip.costs.activities + addedCost };
+      setTrip({ ...trip, days: updatedDays, costs: { ...costs, usdEstimate: tripTotal(costs) } });
+      resultingDayItems = updatedDays[activeDayIndex]?.items ?? null;
     }
-
     if (resultingDayItems) {
-      const refined = await computeRefinedTransit(resultingDayItems);
+      const dayItems = fillMissingTransit(resultingDayItems);
+      // Optimistic pass: show an estimate immediately, same as Reorder does,
+      // instead of only ever showing real transit if/when the backend
+      // refinement call succeeds.
+      setTrip((prev) => {
+        const day = prev.days[activeDayIndex];
+        if (!day) return prev;
+        const stillSame = day.items.map((it) => it.id).join('|') === resultingDayItems!.map((it) => it.id).join('|');
+        if (!stillSame) return prev;
+        const updatedDays = prev.days.map((d, idx) => (idx !== activeDayIndex ? d : { ...d, items: dayItems }));
+        return { ...prev, days: updatedDays };
+      });
+
+      const refined = await computeRefinedTransit(dayItems);
       if (refined) {
         setTrip((prev) => {
           const day = prev.days[activeDayIndex];
           if (!day) return prev;
-          const stillSame = day.items.map((it) => it.id).join('|') === resultingDayItems!.map((it) => it.id).join('|');
+          const stillSame = day.items.map((it) => it.id).join('|') === dayItems.map((it) => it.id).join('|');
           if (!stillSame) return prev;
           const updatedDays = prev.days.map((d, idx) => (idx !== activeDayIndex ? d : { ...d, items: refined }));
           return { ...prev, days: updatedDays };
@@ -556,6 +793,21 @@ export const App: React.FC = () => {
   };
 
   // Edit / Save Timeline Item
+  const applyLocalItemEdit = (savedItem: TimelineItem) => {
+    setTrip((prev) => {
+      const updatedDays = prev.days.map((day, idx) => {
+        if (idx !== activeDayIndex) return day;
+        const exists = day.items.some((it) => it.id === savedItem.id);
+        const newItems = exists
+          ? day.items.map((it) => (it.id === savedItem.id ? savedItem : it))
+          : [...day.items, savedItem];
+        newItems.sort(byTime);
+        return { ...day, items: newItems };
+      });
+      return { ...prev, days: updatedDays };
+    });
+  };
+
   const handleSaveEditedItem = async (savedItem: TimelineItem) => {
     const dayNumber = activeDayIndex + 1;
     try {
@@ -575,7 +827,9 @@ export const App: React.FC = () => {
               ? {
                   latitude: savedItem.mapCoords.lat,
                   longitude: savedItem.mapCoords.lng,
-                  name: savedItem.subtitle,
+                  // The place's name, not its subtitle — sending the subtitle
+                  // made the backend rename the stop to its own description.
+                  name: savedItem.title,
                 }
               : undefined,
           },
@@ -583,24 +837,18 @@ export const App: React.FC = () => {
       });
       if (!response.ok) throw new Error(`Failed to save item (${response.status})`);
       const data = await response.json();
-      if (data.itinerary?.daily_itinerary?.days) {
-        setTrip((prev) => mapChatItineraryToTrip(data.itinerary.daily_itinerary, prev));
+      const itinerary = normalizeChatItinerary(data.itinerary ?? data);
+      if (itinerary) {
+        setTrip((prev) => mapChatItineraryToTrip(itinerary, prev));
+      } else {
+        // Saved server-side but nothing usable came back — keep the local edit
+        // instead of leaving the timeline showing the pre-edit version.
+        applyLocalItemEdit(savedItem);
       }
     } catch (error) {
       console.error('Error saving itinerary item:', error);
       // optimistic local fallback so the UI doesn't feel broken if the API is down
-      setTrip((prev) => {
-        const updatedDays = prev.days.map((day, idx) => {
-          if (idx !== activeDayIndex) return day;
-          const exists = day.items.some((it) => it.id === savedItem.id);
-          const newItems = exists
-            ? day.items.map((it) => (it.id === savedItem.id ? savedItem : it))
-            : [...day.items, savedItem];
-          newItems.sort((a, b) => timeToMinutes(a.time) - timeToMinutes(b.time));
-          return { ...day, items: newItems };
-        });
-        return { ...prev, days: updatedDays };
-      });
+      applyLocalItemEdit(savedItem);
     } finally {
       setIsEditItemModalOpen(false);
       setEditingItem(null);
@@ -651,49 +899,67 @@ export const App: React.FC = () => {
   };
 
   // Delete item
-const handleDeleteItem = async (itemId: string) => {
-  const day = trip.days[activeDayIndex];
-  const itemToDelete = day?.items.find((it) => it.id === itemId);
-  if (!itemToDelete) return;
+  const handleDeleteItem = async (itemId: string) => {
+    const day = trip.days[activeDayIndex];
+    const itemToDelete = day?.items.find((it) => it.id === itemId);
+    if (!itemToDelete) return;
 
-  // Flights/hotels aren't part of chat.py's Place model — nothing to call.
-  if (itemToDelete.type === 'flight' || itemToDelete.type === 'hotel') {
-    console.warn('Flight/hotel items cannot be deleted via the itinerary chat layer.');
-    return;
-  }
-
-  try {
-    const response = await fetch(`${API_BASE_URL}/api/itinerary/action`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        session_id: chatSessionId,
-        action: 'REMOVE_PLACE',
-        params: {
-          place_name: itemToDelete.title,
-          day: activeDayIndex, // chat.py days are 0-indexed already
-        },
-      }),
-    });
-    if (!response.ok) throw new Error(`Failed to delete item (${response.status})`);
-    const data = await response.json();
-    if (data.itinerary?.daily_itinerary?.days) {
-      setTrip((prev) => mapChatItineraryToTrip(data.itinerary.daily_itinerary, prev));
+    // Flights/hotels aren't part of chat.py's Place model — nothing to call.
+    // TimelineView also hides the delete button for them, so this is a guard
+    // rather than the primary defence.
+    if (itemToDelete.type === 'flight' || itemToDelete.type === 'hotel') {
+      console.warn('Flight/hotel items cannot be deleted via the itinerary chat layer.');
+      return;
     }
-  } catch (error) {
-    console.error('Error deleting itinerary item:', error);
-    // Local-only fallback: remove from view even if the API call failed.
-    // Will be overwritten by the server's version on next sync.
-    setTrip((prev) => {
-      const updatedDays = prev.days.map((d, idx) =>
-        idx !== activeDayIndex
-          ? d
-          : { ...d, items: d.items.filter((it) => it.id !== itemId) },
-      );
-      return { ...prev, days: updatedDays };
-    });
-  }
-};
+
+    const removeLocally = () =>
+      setTrip((prev) => {
+        const updatedDays = prev.days.map((d, idx) =>
+          idx !== activeDayIndex
+            ? d
+            : { ...d, items: d.items.filter((it) => it.id !== itemId) },
+        );
+        const costs = {
+          ...prev.costs,
+          activities: Math.max(
+            0,
+            prev.costs.activities -
+              (itemToDelete.price ?? 0) * (prev.travelersCount > 0 ? prev.travelersCount : 1),
+          ),
+        };
+        return { ...prev, days: updatedDays, costs: { ...costs, usdEstimate: tripTotal(costs) } };
+      });
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/itinerary/action`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: chatSessionId,
+          action: 'REMOVE_PLACE',
+          params: {
+            place_name: itemToDelete.title,
+            day: activeDayIndex, // chat.py days are 0-indexed already
+          },
+        }),
+      });
+      if (!response.ok) throw new Error(`Failed to delete item (${response.status})`);
+      const data = await response.json();
+      const itinerary = normalizeChatItinerary(data.itinerary ?? data);
+      if (itinerary) {
+        setTrip((prev) => mapChatItineraryToTrip(itinerary, prev));
+      } else {
+        // Deleted server-side but no itinerary came back — the item used to
+        // stay on screen until the next sync, looking like the delete failed.
+        removeLocally();
+      }
+    } catch (error) {
+      console.error('Error deleting itinerary item:', error);
+      // Local-only fallback: remove from view even if the API call failed.
+      // Will be overwritten by the server's version on next sync.
+      removeLocally();
+    }
+  };
 
   // AI Chat & Intent Processing
   const handleSendMessage = async (userText: string) => {
@@ -939,68 +1205,58 @@ const handleDeleteItem = async (itemId: string) => {
             if (isReturnToHotel && isLastDay && item.time > hotelDetails.checkOut) return false;
             return true;
           });
-          const items = schedule.map((item: any, index: number) => {
-            let itemType: 'activity' | 'hotel' | 'dining' | 'flight' = 'activity';
-            if (item.kind === 'meal') itemType = 'dining';
+          const items: TimelineItem[] = schedule.map((item: any, index: number) => {
+            const name = String(item.name ?? '');
+            const kind = String(item.kind ?? '');
+            let itemType: TimelineItem['type'] = KIND_TO_TYPE[kind] ?? 'activity';
+            // `item.name` is optional in the planner payload; calling
+            // .toLowerCase() on it directly threw for nameless entries.
             if (
-              item.kind === 'flight' ||
-              item.name.toLowerCase().includes('flight') ||
-              item.name.toLowerCase().includes('arrival')
+              kind === 'flight' ||
+              name.toLowerCase().includes('flight') ||
+              name.toLowerCase().includes('arrival')
             )
               itemType = 'flight';
-            // kind 'hotel' ("Return to Hotel") and 'hotel_checkin' (mid-day early
-            // arrival check-in) are real itinerary beats, but never the rich
-            // booking card — that's reserved for the two synthesized boundary
-            // cards below. Falls through to plain 'activity'.
+
+            const hasCoords = item.location?.latitude != null && item.location?.longitude != null;
 
             return {
-              id: `item-${day.day || dayIdx}-${index}`,
-              time: item.time,
+              id: `item-${dayIdx}-${index}`,
+              time: toHHMM(item.time, '12:00'),
               type: itemType,
               tag:
-                item.kind === 'hotel' ? 'Rest'
-                : item.kind === 'hotel_checkin' ? 'Hotel Check-in'
-                : item.kind ? item.kind.charAt(0).toUpperCase() + item.kind.slice(1)
+                kind === 'hotel' ? 'Rest'
+                : kind === 'hotel_checkin' ? 'Hotel Check-in'
+                : kind ? kind.charAt(0).toUpperCase() + kind.slice(1)
                 : 'Activity',
-              title: item.name,
+              title: name || 'Planned activity',
               subtitle: item.location?.name || 'Location confirmed',
-              details: item.rating ? `Rating: ${item.rating} ⭐ • Duration: ${item.duration_min || 60} mins` : undefined,
-              mapCoords: item.location
+              details: formatActivityDetails(item.rating, item.duration_min),
+              mapCoords: hasCoords
                 ? { x: 0, y: 0, lat: item.location.latitude, lng: item.location.longitude }
                 : undefined,
               // Planner already computed real transit for every leg — surface it
-              // immediately instead of only backfilling it via computeRefinedTransit
-              // after a later add/reorder action.
-              transitToNext: item.transit_to_next
-                ? {
-                    type: item.transit_to_next.mode === 'walk' ? 'walk' : item.transit_to_next.mode === 'train' ? 'train' : 'bus',
-                    description: item.transit_to_next.description || '',
-                  }
-                : undefined,
+              // immediately instead of only backfilling it via
+              // computeRefinedTransit after a later add/reorder action.
+              // (There used to be two `transitToNext` keys in this object, so
+              // the first mapping was silently dead code.)
+              transitToNext: toTransitInfo(item.transit_to_next),
+              // kind 'hotel_checkin' IS the booking moment, so it gets the rich
+              // card; plain 'hotel' ("Return to Hotel") stays a rest beat.
               hotelDetails: itemType === 'hotel' ? hotelDetails : undefined,
+              nights: itemType === 'hotel' ? hotelDetails.totalNights : undefined,
               flightDetails:
                 itemType === 'flight'
                   ? isLastDay
                     ? returnDetails
                     : outboundDetails
                   : undefined,
-              transitToNext: item.transit_to_next
-                ? {
-                    type: item.transit_to_next.mode === 'walk' ? 'walk'
-                        : item.transit_to_next.mode === 'train' ? 'train'
-                        : item.transit_to_next.mode === 'taxi' ? 'taxi'
-                        : 'subway',
-                    description: item.transit_to_next.description || '',
-                    duration: item.transit_to_next.duration,
-                    distance: item.transit_to_next.distance,
-                  }
-                : undefined,
             };
           });
 
           // Ensure Day 1 has explicit Flight Arrival and Hotel Check-in items if not present
           if (isFirstDay) {
-            const hasFlight = items.some((it: any) => it.type === 'flight');
+            const hasFlight = items.some((it) => it.type === 'flight');
             if (!hasFlight) {
               items.unshift({
                 id: `item-flight-outbound-day${dayIdx + 1}`,
@@ -1013,31 +1269,40 @@ const handleDeleteItem = async (itemId: string) => {
               });
             }
 
-            items.push({
-              id: `item-hotel-checkin-day${dayIdx + 1}`,
-              time: hotelDetails.checkIn,
-              type: 'hotel',
-              tag: 'Hotel Check-in',
-              title: `Check-in: ${hotelDetails.name}`,
-              subtitle: hotelDetails.address,
-              nights: hotelDetails.totalNights,
-              hotelDetails,
-            });
+            // Only synthesize a check-in card when the planner didn't already
+            // return one (kind 'hotel_checkin'), otherwise day 1 shows two
+            // "Hotel Check-in" cards for the same booking.
+            const hasCheckIn = items.some((it) => it.type === 'hotel' && it.tag === 'Hotel Check-in');
+            if (!hasCheckIn) {
+              items.push({
+                id: `item-hotel-checkin-day${dayIdx + 1}`,
+                time: earliestCheckInAfterArrival(hotelDetails.checkIn, outboundDetails.arrTime),
+                type: 'hotel',
+                tag: 'Hotel Check-in',
+                title: `Check-in: ${hotelDetails.name}`,
+                subtitle: hotelDetails.address,
+                nights: hotelDetails.totalNights,
+                hotelDetails,
+              });
+            }
           }
 
           if (isLastDay) {
-            items.push({
-              id: `item-hotel-checkout-day${dayIdx + 1}`,
-              time: hotelDetails.checkOut,
-              type: 'hotel',
-              tag: 'Hotel Check-out',
-              title: `Check-out: ${hotelDetails.name}`,
-              subtitle: hotelDetails.address,
-              hotelDetails,
-            });
+            const hasCheckOut = items.some((it) => it.type === 'hotel' && it.tag === 'Hotel Check-out');
+            if (!hasCheckOut) {
+              items.push({
+                id: `item-hotel-checkout-day${dayIdx + 1}`,
+                time: hotelDetails.checkOut,
+                type: 'hotel',
+                tag: 'Hotel Check-out',
+                title: `Check-out: ${hotelDetails.name}`,
+                subtitle: hotelDetails.address,
+                hotelDetails,
+              });
+            }
 
             const hasReturnFlight = items.some(
-              (it: any) => it.type === 'flight' && it.flightDetails?.direction === 'return',
+              (it) => it.type === 'flight' && it.flightDetails?.direction === 'return',
             );
             if (!hasReturnFlight) {
               items.push({
@@ -1052,12 +1317,12 @@ const handleDeleteItem = async (itemId: string) => {
             }
           }
 
-          // Sort all items chronologically by their HH:MM time string
-          items.sort((a: any, b: any) => a.time.localeCompare(b.time));
+          // Chronological order by parsed minutes, not string comparison
+          items.sort(byTime);
 
           return {
             dayNumber: dayIdx + 1,
-            dateLabel: `Day ${dayIdx + 1} • ${day.date}`,
+            dateLabel: `Day ${dayIdx + 1} • ${day.date || ''}`,
             items: items,
           };
         },
@@ -1080,6 +1345,20 @@ const handleDeleteItem = async (itemId: string) => {
       };
       setFlightSearchParams(newFlightSearchParams);
 
+      const generatedCosts = {
+        activities: (apiData.cost_breakdown?.activities || 0) * travelersCount,
+        // Accommodation comes from the hotel booking. The old fallback chain
+        // reached for cost_breakdown.food_dining — a completely unrelated
+        // budget line — whenever the hotel had no total.
+        accommodation:
+          hotelDetails.totalPrice ??
+          apiData.cost_breakdown?.accommodation ??
+          0,
+        flights: (outboundDetails.price + returnDetails.price) * travelersCount,
+        currency: apiData.cost_breakdown?.currency || outboundDetails.currency || 'USD',
+        usdEstimate: 0,
+      };
+
       const newTrip: Trip = {
         id: `trip-${Date.now()}`,
         title:
@@ -1089,29 +1368,16 @@ const handleDeleteItem = async (itemId: string) => {
         travelersCount: travelersCount,
         budget: budget,
         vibes: newTripData.vibes ?? [],
-        costs: {
-          activities:
-            (apiData.cost_breakdown?.activities || 350) * travelersCount,
-          accommodation:
-            hotelDetails.totalPrice ||
-            apiData.cost_breakdown?.food_dining ||
-            400,
-          flights:
-            (outboundDetails.price + returnDetails.price) * travelersCount,
-          currency: apiData.cost_breakdown?.currency || 'USD',
-          // Estimated total = hotel + flights only (activities excluded from total)
-          usdEstimate:
-            (hotelDetails.totalPrice ||
-              apiData.cost_breakdown?.food_dining ||
-              400) +
-            (outboundDetails.price + returnDetails.price) * travelersCount,
-        },
+        // usdEstimate is the grand total (accommodation + flights + activities)
+        // so the timeline summary and the Finalize & Pay screen quote the same
+        // figure; activities used to be silently excluded here.
+        costs: { ...generatedCosts, usdEstimate: tripTotal(generatedCosts) },
         members: Array.from({ length: travelersCount }).map((_, i) => ({
           id: `member-${i}`,
           name: i === 0 ? 'You' : `Traveler ${i + 1}`,
           avatar: `https://i.pravatar.cc/150?u=${i}`,
-          shareAmount: Math.round(budget / travelersCount),
-          hasPaid: i !== 0,
+          shareAmount: Math.round(tripTotal(generatedCosts) / (travelersCount || 1)),
+          hasPaid: false,
           isCurrentUser: i === 0,
         })),
         days: formattedDays,
@@ -1173,10 +1439,22 @@ const handleDeleteItem = async (itemId: string) => {
       const parsed: {
         trip: Trip;
         hotelSearchParams?: typeof hotelSearchParams;
+        flightSearchParams?: typeof flightSearchParams;
+        chatSessionId?: string;
       } = JSON.parse(saved);
       setTrip(parsed.trip);
       if (parsed.hotelSearchParams) {
         setHotelSearchParams(parsed.hotelSearchParams);
+      }
+      // Same class of bug as hotelSearchParams: without these, "Change Flight"
+      // searched with empty origin/destination and the AI co-pilot started a
+      // brand new server session (losing the itinerary context) after a
+      // payment redirect.
+      if (parsed.flightSearchParams) {
+        setFlightSearchParams(parsed.flightSearchParams);
+      }
+      if (parsed.chatSessionId) {
+        setChatSessionId(parsed.chatSessionId);
       }
       setHasGeneratedItinerary(true);
       setActiveTab('dashboard');
@@ -1259,7 +1537,10 @@ const handleDeleteItem = async (itemId: string) => {
           <FinalizePayView
             trip={trip}
             hotelSearchParams={hotelSearchParams}
+            flightSearchParams={flightSearchParams}
+            chatSessionId={chatSessionId}
             onBack={() => setActiveView('workspace')}
+            onUpdateMembers={(members) => setTrip((prev) => ({ ...prev, members }))}
           />
         ) : isMapView ? (
           <MapView
@@ -1284,6 +1565,7 @@ const handleDeleteItem = async (itemId: string) => {
             {/* Right Itinerary Timeline Column */}
             <TimelineView
               trip={trip}
+              isGenerating={isAIGenerating && trip.days.length === 0}
               activeDayIndex={activeDayIndex}
               onSelectDay={(idx) => setActiveDayIndex(idx)}
               onOpenAddActivity={() => setIsActivityModalOpen(true)}
@@ -1319,8 +1601,8 @@ const handleDeleteItem = async (itemId: string) => {
         isOpen={isActivityModalOpen}
         onClose={() => setIsActivityModalOpen(false)}
         onAddActivity={handleAddActivity}
-        originLat={getActivitySearchOrigin().lat}
-        originLng={getActivitySearchOrigin().lng}
+        originLat={activitySearchOrigin.lat}
+        originLng={activitySearchOrigin.lng}
       />
 
       <ChangeAccommodationModal

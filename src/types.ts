@@ -105,23 +105,6 @@ export interface ChatMessage {
   actionApplied?: string;
 }
 
-export interface FlightOption {
-  id: string;
-  airline: string;
-  airlineLogo: string;
-  flightCode: string;
-  from: string;
-  to?: string;
-  departTime: string;
-  arriveTime: string;
-  date: string;
-  duration: string;
-  layover: string;
-  price: number;
-  nonRefundable: boolean;
-  seatsLeft: number;
-}
-
 export interface RoomOption {
   room_name: string;
   max_occupancy: number;
@@ -181,6 +164,12 @@ export interface ActivityOption {
   address?: string | null;
 }
 
+// NOTE: this is the ONLY FlightOption declaration. There used to be a second,
+// legacy one above (airlineLogo/flightCode/departTime/...). Because TypeScript
+// merges same-named interfaces, `FlightOption` silently became the union of
+// both field sets — so a value shaped like the real /flight/change response
+// wasn't actually assignable to it, and neither shape could be constructed in
+// code without type errors.
 export interface FlightSegmentInfo {
   time: string;
   date: string;
