@@ -9,6 +9,10 @@ interface InviteFriendsModalProps {
   members: TripMember[];
   currentUserId: string;
   tripId: string;
+  // The trip's fixed headcount (set once in NewTripModal). Adding members
+  // here can't exceed it — this modal only fills existing seats, it doesn't
+  // change how many seats the trip has.
+  maxMembers: number;
   onAddMember: (member: TripMember) => void;
   onRemoveMember: (memberId: string) => void;
 }
@@ -24,6 +28,7 @@ export const InviteFriendsModal: React.FC<InviteFriendsModalProps> = ({
   members,
   currentUserId,
   tripId,
+  maxMembers,
   onAddMember,
   onRemoveMember,
 }) => {
@@ -32,9 +37,12 @@ export const InviteFriendsModal: React.FC<InviteFriendsModalProps> = ({
 
   if (!isOpen) return null;
 
+  const slotsRemaining = Math.max(0, maxMembers - members.length);
+  const isFull = slotsRemaining <= 0;
+
   const handleAdd = () => {
     const trimmed = name.trim();
-    if (!trimmed) return;
+    if (!trimmed || isFull) return;
     // Mock invite: no email/SMS actually goes out and no server-side invite
     // record is created — this just adds the member locally so Finalize &
     // Pay can split against them. A real invite flow would create a pending
@@ -101,32 +109,45 @@ export const InviteFriendsModal: React.FC<InviteFriendsModalProps> = ({
 
           {/* Add by name (mock invite — no real email/SMS sent) */}
           <div>
-            <p className="text-xs font-semibold text-[#727785] uppercase tracking-wider mb-2">
-              Add a friend
-            </p>
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs font-semibold text-[#727785] uppercase tracking-wider">
+                Add a friend
+              </p>
+              <span className="text-[10px] font-medium text-[#727785]">
+                {isFull
+                  ? 'All seats filled'
+                  : `${slotsRemaining} ${slotsRemaining === 1 ? 'seat' : 'seats'} left`}
+              </span>
+            </div>
             <div className="flex gap-2">
               <input
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && handleAdd()}
-                placeholder="Friend's name"
-                className="flex-1 bg-white border border-[#e1e3e4] focus:border-[#0058be] focus:ring-2 focus:ring-[#0058be]/20 rounded-full px-4 py-2 text-sm outline-none transition-all"
+                placeholder={isFull ? 'No seats left to fill' : "Friend's name"}
+                disabled={isFull}
+                className="flex-1 bg-white border border-[#e1e3e4] focus:border-[#0058be] focus:ring-2 focus:ring-[#0058be]/20 rounded-full px-4 py-2 text-sm outline-none transition-all disabled:bg-[#f3f4f5] disabled:cursor-not-allowed"
               />
               <button
                 onClick={handleAdd}
-                disabled={!name.trim()}
+                disabled={!name.trim() || isFull}
                 className="shrink-0 bg-[#0058be] text-white px-4 py-2 rounded-full text-xs font-semibold hover:bg-[#2170e4] transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 Add
               </button>
             </div>
+            {isFull && (
+              <p className="text-[10px] text-[#727785] mt-1.5">
+                This trip is set for {maxMembers} {maxMembers === 1 ? 'traveler' : 'travelers'}. Remove someone below to invite someone else instead.
+              </p>
+            )}
           </div>
 
           {/* Current members */}
           <div>
             <p className="text-xs font-semibold text-[#727785] uppercase tracking-wider mb-2">
-              In this trip ({members.length})
+              In this trip ({members.length}/{maxMembers})
             </p>
             <div className="flex flex-col gap-2 max-h-56 overflow-y-auto">
               {members.map((member) => (

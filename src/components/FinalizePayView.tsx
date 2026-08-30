@@ -82,8 +82,18 @@ export const FinalizePayView: React.FC<FinalizePayViewProps> = ({
   const currency = trip.costs.currency || 'USD';
   const symbol = currencySymbol(currency);
   const totalCost = tripTotal(trip.costs);
-  const numTravelers = trip.members.length || trip.travelersCount || 1;
+  // numTravelers is the trip's fixed HEADCOUNT (set once in NewTripModal),
+  // not how many people have actually joined so far — trip.members only
+  // holds real, joined travelers now (see App.tsx trip creation), so early
+  // on it can be just "You" while numTravelers is still e.g. 4. Falling back
+  // to trip.members.length is only for legacy/edge trips that somehow have
+  // no travelersCount at all.
+  const numTravelers = trip.travelersCount || trip.members.length || 1;
   const perPersonShare = totalCost / numTravelers;
+  // How many seats are still unfilled. Adding/removing REAL members (via the
+  // invite modal) is the only thing that changes this — the headcount itself
+  // can't be edited from this screen.
+  const emptySlots = Math.max(0, numTravelers - trip.members.length);
 
   const money = (amount: number) =>
     `${symbol}${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -480,12 +490,38 @@ export const FinalizePayView: React.FC<FinalizePayViewProps> = ({
                     </div>
                   );
                 })}
+
+                {/* Unfilled seats — travelersCount minus real, joined members.
+                    Each is just an entry point into the invite modal, not a
+                    fabricated person; the pax count itself isn't editable
+                    from here, only who fills the existing seats. */}
+                {Array.from({ length: emptySlots }).map((_, i) => (
+                  <button
+                    key={`empty-slot-${i}`}
+                    onClick={() => setIsInviteModalOpen(true)}
+                    className="flex items-center justify-between p-3 rounded-xl border-2 border-dashed border-[#c2c6d6] text-left hover:border-[#0058be] hover:bg-[#d8e2ff]/10 transition-colors cursor-pointer"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-full border-2 border-dashed border-[#c2c6d6] flex items-center justify-center text-[#727785] shrink-0">
+                        <span className="material-symbols-outlined text-[18px]">person_add</span>
+                      </div>
+                      <p className="text-sm font-medium text-[#727785]">
+                        Invite traveler
+                      </p>
+                    </div>
+                    <p className="text-sm font-semibold text-[#727785]">
+                      {money(perPersonShare)}
+                    </p>
+                  </button>
+                ))}
+
                 <InviteFriendsModal
                   isOpen={isInviteModalOpen}
                   onClose={() => setIsInviteModalOpen(false)}
                   members={trip.members}
                   currentUserId={trip.members.find((m) => m.isCurrentUser)?.id ?? ''}
                   tripId={trip.id}
+                  maxMembers={numTravelers}
                   onAddMember={(member) => onUpdateMembers([...trip.members, member])}
                   onRemoveMember={(memberId) => onUpdateMembers(trip.members.filter((m) => m.id !== memberId))}
                 />
