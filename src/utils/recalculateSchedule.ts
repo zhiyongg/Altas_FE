@@ -134,3 +134,25 @@ export const fillMissingTransit = (items: TimelineItem[]): TimelineItem[] => {
     return { ...item, transitToNext: estimateTransit(item, next) };
   });
 };
+
+// A "Return to Hotel" rest beat only makes sense once the guest has actually
+// checked in (day 1) and before they've checked out (last day). This has to
+// be re-evaluated any time check-in/check-out can move — not computed once
+// at generation and left stale, since changing the hotel changes the window.
+export const isReturnToHotelBeat = (item: TimelineItem): boolean =>
+  item.tag === 'Rest' && item.title.includes('Return to Hotel');
+
+export const pruneRestBeats = (
+  items: TimelineItem[],
+  opts: { isFirstDay: boolean; isLastDay: boolean; checkIn?: string; checkOut?: string },
+): TimelineItem[] =>
+  items.filter((item) => {
+    if (!isReturnToHotelBeat(item)) return true;
+    if (opts.isFirstDay && opts.checkIn && timeToMinutes(item.time) < timeToMinutes(opts.checkIn)) {
+      return false;
+    }
+    if (opts.isLastDay && opts.checkOut && timeToMinutes(item.time) > timeToMinutes(opts.checkOut)) {
+      return false;
+    }
+    return true;
+  });

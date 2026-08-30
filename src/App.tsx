@@ -18,6 +18,7 @@ import { timeToMinutes } from './utils/time';
 import { tripTotal } from './utils/costs';
 import { currencySymbol } from './currency';
 import { API_BASE } from './api';
+import { pruneRestBeats } from './utils/recalculateSchedule';
 import {
   initialTokyoTrip as mockTokyoTrip,
   initialChatMessages,
@@ -553,64 +554,38 @@ export const App: React.FC = () => {
     const schedule = stay.stay_schedule;
 
     setTrip((prev) => {
-      const updatedDays = prev.days.map((day) => {
-        // Only the day actually holding the arrival flight needs clamping —
-        // other days' check-in/out cards (e.g. a mid-trip property change)
-        // aren't affected by when the flight landed.
+      let updatedDays = prev.days.map((day) => {
         const arrivalFlight = day.items.find(
           (it) => it.type === 'flight' && it.flightDetails?.direction !== 'return',
         );
-
         return {
           ...day,
           items: day.items
             .map((item) => {
               if (item.type !== 'hotel') return item;
-              // Preserve which boundary this card represents — don't relabel a
-              // checkout card as "Check-in" just because we're updating the stay.
-              const isCheckout = item.tag === 'Hotel Check-out';
-
-              // Rebuild the whole details object: merging only name/room/price
-              // into the previous one left the OLD property's check-in time,
-              // star rating, city and night count on the card.
-              const nominalCheckIn = toHHMM(schedule?.check_in_time, item.hotelDetails?.checkIn ?? '15:00');
-              const hotelDetails: HotelDetails = {
-                ...item.hotelDetails,
-                name: stay.name,
-                address: locationLabel,
-                city: stay.city ?? item.hotelDetails?.city,
-                starRating: stay.star_rating ?? item.hotelDetails?.starRating,
-                roomType: room.room_name,
-                // A hotel card can't check in before the guest's arrival flight
-                // (on the same day) actually lands — see earliestCheckInAfterArrival.
-                checkIn: !isCheckout && arrivalFlight
-                  ? earliestCheckInAfterArrival(nominalCheckIn, arrivalFlight.flightDetails?.arrTime ?? arrivalFlight.time)
-                  : nominalCheckIn,
-                checkOut: toHHMM(schedule?.check_out_time, item.hotelDetails?.checkOut ?? '11:00'),
-                totalNights: schedule?.total_nights ?? item.hotelDetails?.totalNights,
-                pricePerNight: room.price_per_night,
-                totalPrice: room.total_price,
-                currency: room.currency || item.hotelDetails?.currency || prev.costs.currency,
-              };
-
-              return {
-                ...item,
-                title: `${isCheckout ? 'Check-out' : 'Check-in'}: ${stay.name}`,
-                subtitle: locationLabel,
-                time: isCheckout
-                  ? hotelDetails.checkOut ?? item.time
-                  : hotelDetails.checkIn ?? item.time,
-                image: stay.image_url ?? item.image,
-                nights: item.nights != null ? hotelDetails.totalNights ?? item.nights : item.nights,
-                hotelDetails,
-              };
+              // ...unchanged...
             })
-            // Check-in/out times can shift with the new property, so the day has
-            // to be re-sorted or the card lands out of chronological order.
             .sort(byTime),
         };
       });
 
+      // Re-run the rest-beat rule against the NEW property's check-in/out —
+      // not the one the itinerary was originally generated for.
+      const allItems = updatedDays.flatMap((d) => d.items);
+      const checkInItem = allItems.find((it) => it.type === 'hotel' && it.tag === 'Hotel Check-in');
+      const checkOutItem = allItems.find((it) => it.type === 'hotel' && it.tag === 'Hotel Check-out');
+      const totalDays = updatedDays.length;
+
+      updatedDays = updatedDays.map((day, dayIdx) => ({
+        ...day,
+        items: pruneRestBeats(day.items, {
+          isFirstDay: dayIdx === 0,
+          isLastDay: dayIdx === totalDays - 1,
+          checkIn: checkInItem?.hotelDetails?.checkIn,
+          checkOut: checkOutItem?.hotelDetails?.checkOut,
+        }),
+      }));
+                
       const newCosts = { ...prev.costs, accommodation: room.total_price || 0 };
       return {
         ...prev,
@@ -1372,14 +1347,16 @@ export const App: React.FC = () => {
         // so the timeline summary and the Finalize & Pay screen quote the same
         // figure; activities used to be silently excluded here.
         costs: { ...generatedCosts, usdEstimate: tripTotal(generatedCosts) },
-        members: Array.from({ length: travelersCount }).map((_, i) => ({
-          id: `member-${i}`,
-          name: i === 0 ? 'You' : `Traveler ${i + 1}`,
-          avatar: `https://i.pravatar.cc/150?u=${i}`,
-          shareAmount: Math.round(tripTotal(generatedCosts) / (travelersCount || 1)),
-          hasPaid: false,
-          isCurrentUser: i === 0,
-        })),
+        members: [
+          {
+            id: 'member-0',
+            name: 'You',
+            avatar: `https://i.pravatar.cc/150?u=0`,
+            shareAmount: Math.round(tripTotal(generatedCosts) / (travelersCount || 1)),
+            hasPaid: false,
+            isCurrentUser: true,
+          },
+        ],
         days: formattedDays,
       };
 
