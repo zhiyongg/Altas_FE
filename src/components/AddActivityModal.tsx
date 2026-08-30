@@ -2,8 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { ActivityOption } from '../types';
-
-const API_BASE = 'http://localhost:8000';
+import { API_BASE } from '../api';
 
 interface AddActivityModalProps {
   isOpen: boolean;
@@ -72,7 +71,11 @@ export const AddActivityModal: React.FC<AddActivityModalProps> = ({
           if (!res.ok) throw new Error(`Activity search failed (${res.status})`);
           return res.json();
         })
-        .then((data: { activities: ActivityOption[] }) => setActivities(data.activities))
+        // `data.activities` is absent on error/edge-case payloads, and the
+        // `.filter(...)` calls below then threw on undefined.
+        .then((data: { activities?: ActivityOption[] }) =>
+          setActivities(data.activities ?? []),
+        )
         .catch((err) => {
           if (err.name !== 'AbortError') setError(err.message ?? 'Failed to load activities');
         })
@@ -169,7 +172,7 @@ export const AddActivityModal: React.FC<AddActivityModalProps> = ({
             </div>
           )}
 
-          {!isLoading && !error && (
+          {!isLoading && !error && activities.length > 0 && (
             <>
               {/* Section 1: Featured Experiences (Sponsored) */}
               {featured.length > 0 && (
@@ -218,7 +221,7 @@ export const AddActivityModal: React.FC<AddActivityModalProps> = ({
                             </span>
                             <div className="flex items-center gap-1">
                               <span className="material-symbols-outlined text-[14px] text-[#924700] fill">star</span>
-                              <span className="text-xs font-bold text-[#191c1d]">{act.rating}</span>
+                              <span className="text-xs font-bold text-[#191c1d]">{act.rating ?? '—'}</span>
                               <span className="text-[11px] text-[#727785]">({act.reviewsCount ?? 0})</span>
                             </div>
                           </div>
@@ -280,7 +283,7 @@ export const AddActivityModal: React.FC<AddActivityModalProps> = ({
                           </div>
                           <div className="flex items-center gap-1 shrink-0 ml-2">
                             <span className="material-symbols-outlined text-[14px] text-[#924700] fill">star</span>
-                            <span className="text-xs font-bold text-[#191c1d]">{act.rating}</span>
+                            <span className="text-xs font-bold text-[#191c1d]">{act.rating ?? '—'}</span>
                           </div>
                         </div>
 

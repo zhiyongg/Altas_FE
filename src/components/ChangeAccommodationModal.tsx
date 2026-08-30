@@ -3,12 +3,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { StayOption, RoomOption } from '../types';
 import { currencySymbol } from '../currency';
-
-// Point this at wherever your FastAPI backend actually runs. In dev that's
-// typically a different port than Vite (see the "running both" note at the
-// bottom of this file), so this can't be a relative path unless you add a
-// Vite proxy for it.
-const API_BASE = 'http://localhost:8000';
+import { API_BASE } from '../api';
 
 // StayAPI rejects check_in dates in the past (HTTP 400 INVALID_DATES).
 // This can happen when the user opens "Change Accommodation" on a trip
@@ -67,7 +62,12 @@ interface ChangeAccommodationModalProps {
 // zeroed placeholders (backend couldn't get per-room pricing) — filtered out
 // since there's nothing meaningful to show or select.
 function getSelectableRooms(stay: StayOption): RoomOption[] {
-  const all = [stay.selected_room, ...stay.available_rooms];
+  // available_rooms is absent on hotels the backend hasn't priced yet, and
+  // spreading `undefined` throws; selected_room can be missing for the same
+  // reason.
+  const all = [stay.selected_room, ...(stay.available_rooms ?? [])].filter(
+    Boolean,
+  ) as RoomOption[];
   const seen = new Set<string>();
   return all.filter((r) => {
     if (!r.room_name) return false;
@@ -189,7 +189,10 @@ export const ChangeAccommodationModal: React.FC<ChangeAccommodationModalProps> =
         if (!res.ok) throw new Error(`Hotel search failed (${res.status})`);
         return res.json();
       })
-      .then((data: { hotels: StayOption[] }) => setStays(data.hotels))
+      // `data.hotels` is missing whenever the backend answers with an error or
+      // a differently-shaped body, and the later `.filter(...)` on undefined
+      // crashed the modal instead of surfacing anything.
+      .then((data: { hotels?: StayOption[] }) => setStays(data.hotels ?? []))
       .catch((err) => {
         if (err.name !== 'AbortError')
           setError(err.message ?? 'Failed to load hotels');
@@ -253,23 +256,32 @@ export const ChangeAccommodationModal: React.FC<ChangeAccommodationModalProps> =
     setExpandedRooms((prev) => ({ ...prev, [id]: !prev[id] }));
   };
 
+  const priceOf = (stay: StayOption) => stay.selected_room?.price_per_night ?? 0;
+
   const filteredStays = stays
     .filter((stay) => {
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
         const location = [stay.address, stay.city].filter(Boolean).join(', ');
         return (
-          stay.name.toLowerCase().includes(q) ||
+          (stay.name || '').toLowerCase().includes(q) ||
           location.toLowerCase().includes(q)
         );
       }
       return true;
     })
     .sort((a, b) => {
-      if (sortBy === 'price')
-        return (
-          a.selected_room.price_per_night - b.selected_room.price_per_night
-        );
+      if (sortBy === 'price') {
+        // Unpriced hotels carry price_per_night === 0, so a plain ascending
+        // sort floated every "See rates" card to the top of a "cheapest first"
+        // list. Keep them last instead.
+        const pa = priceOf(a);
+        const pb = priceOf(b);
+        if (pa <= 0 && pb <= 0) return 0;
+        if (pa <= 0) return 1;
+        if (pb <= 0) return -1;
+        return pa - pb;
+      }
       if (sortBy === 'rating') return (b.rating ?? 0) - (a.rating ?? 0);
       return 0;
     });
@@ -378,7 +390,7 @@ export const ChangeAccommodationModal: React.FC<ChangeAccommodationModalProps> =
                       const selectableRooms = getSelectableRooms(stay);
                       const hasMultipleRooms = selectableRooms.length > 1;
                       const isExpanded = !!expandedRooms[stay.hotel_id];
-                      const hasPrice = stay.selected_room.price_per_night > 0;
+                      const hasPrice = priceOf(stay) > 0;
                       const isPricing = !!pricingIds[stay.hotel_id];
 
                       return (
@@ -440,9 +452,9 @@ export const ChangeAccommodationModal: React.FC<ChangeAccommodationModalProps> =
                                     </p>
                                     <p className="font-bold text-base text-[#191c1d]">
                                       {currencySymbol(
-                                        stay.selected_room.currency,
+                                        stay.selected_room?.currency || 'USD',
                                       )}
-                                      {stay.selected_room.price_per_night.toFixed(2)}
+                                      {priceOf(stay).toFixed(2)}
                                     </p>
                                   </div>
                                   <button
@@ -511,12 +523,22 @@ export const ChangeAccommodationModal: React.FC<ChangeAccommodationModalProps> =
                 <h3 className="font-semibold text-lg text-[#191c1d] mb-4">
                   All Options
                 </h3>
-                <div className="flex flex-col gap-4">
+                {/* Previously the list just rendered empty, so a search with no
+                    matches (or a backend that returned zero hotels) looked like
+                    a broken modal. */}
+                {filteredStays.length === 0 ? (
+                  <p className="py-10 text-center text-sm text-[#727785]">
+                    {searchQuery.trim()
+                      ? `No stays match “${searchQuery.trim()}”.`
+                      : 'No stays were found for these dates.'}
+                  </p>
+                ) : (
+                  <div className="flex flex-col gap-4">
                   {regularStays.map((stay) => {
                     const selectableRooms = getSelectableRooms(stay);
                     const hasMultipleRooms = selectableRooms.length > 1;
                     const isExpanded = !!expandedRooms[stay.hotel_id];
-                    const hasPrice = stay.selected_room.price_per_night > 0;
+                    const hasPrice = priceOf(stay) > 0;
                     const isPricing = !!pricingIds[stay.hotel_id];
 
                     return (
@@ -595,9 +617,9 @@ export const ChangeAccommodationModal: React.FC<ChangeAccommodationModalProps> =
                                   </p>
                                   <p className="font-bold text-lg text-[#191c1d]">
                                     {currencySymbol(
-                                      stay.selected_room.currency,
+                                      stay.selected_room?.currency || 'USD',
                                     )}
-                                    {stay.selected_room.price_per_night.toFixed(2)}
+                                    {priceOf(stay).toFixed(2)}
                                   </p>
                                 </div>
                                 <button
@@ -653,7 +675,8 @@ export const ChangeAccommodationModal: React.FC<ChangeAccommodationModalProps> =
                       </div>
                     );
                   })}
-                </div>
+                  </div>
+                )}
               </section>
             </>
           )}

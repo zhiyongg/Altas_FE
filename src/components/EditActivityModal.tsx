@@ -2,7 +2,7 @@
 //only limit to activity, cant change for flight and hotel
 
 import React, { useState, useEffect } from 'react';
-import { TimelineItem } from '../types';
+import { TimelineItem, TransitInfo } from '../types';
 
 interface EditActivityModalProps {
   isOpen: boolean;
@@ -11,7 +11,37 @@ interface EditActivityModalProps {
   onSave: (item: TimelineItem) => void;
 }
 
-const EDITABLE_TYPES: TimelineItem['type'][] = ['dining', 'culture', 'shopping', 'nightlife', 'activity'];
+// This list was declared but never used, while the <select> below hardcoded a
+// *different* set of options that omitted 'nature' — so opening a park/garden
+// item and saving it silently reclassified it as dining (the first option).
+// One list now drives both.
+const EDITABLE_TYPES: { value: TimelineItem['type']; label: string }[] = [
+  { value: 'dining', label: 'Dining / Food' },
+  { value: 'culture', label: 'Culture / Sightseeing' },
+  { value: 'nature', label: 'Parks / Nature' },
+  { value: 'shopping', label: 'Shopping' },
+  { value: 'nightlife', label: 'Nightlife' },
+  { value: 'activity', label: 'General Activity' },
+];
+
+const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+// Keyword sniffing is only a last resort: if the item already had structured
+// transit data we keep its mode (and duration/distance) rather than flattening
+// every leg to walk-or-train, which is what the old inline ternary did — it
+// turned a 25-minute taxi ride into a "train" with no duration attached.
+const inferTransitType = (
+  description: string,
+  previous?: TransitInfo,
+): TransitInfo['type'] => {
+  const text = description.toLowerCase();
+  if (text.includes('walk')) return 'walk';
+  if (text.includes('taxi') || text.includes('car') || text.includes('drive')) return 'taxi';
+  if (text.includes('bus')) return 'bus';
+  if (text.includes('subway') || text.includes('metro')) return 'subway';
+  if (text.includes('train') || text.includes('rail')) return 'train';
+  return previous?.type ?? 'train';
+};
 
 export const EditActivityModal: React.FC<EditActivityModalProps> = ({
   isOpen,
@@ -27,6 +57,7 @@ export const EditActivityModal: React.FC<EditActivityModalProps> = ({
   const [details, setDetails] = useState('');
   const [transitDesc, setTransitDesc] = useState('');
   const [imageUrl, setImageUrl] = useState('');
+  const [timeError, setTimeError] = useState<string | null>(null);
 
   useEffect(() => {
     if (item) {
@@ -48,6 +79,7 @@ export const EditActivityModal: React.FC<EditActivityModalProps> = ({
       setTransitDesc('');
       setImageUrl('');
     }
+    setTimeError(null);
   }, [item, isOpen]);
 
   if (!isOpen) return null;
@@ -63,23 +95,36 @@ export const EditActivityModal: React.FC<EditActivityModalProps> = ({
     e.preventDefault();
     if (!title.trim()) return;
 
+    // The time field is free text, so "9", "9pm" or "25:00" used to be accepted
+    // verbatim — then timeToMinutes() couldn't parse it and the item jumped to
+    // the top of the day (and the backend rejected the edit).
+    const normalizedTime = time.trim();
+    if (!HHMM.test(normalizedTime)) {
+      setTimeError('Use 24-hour HH:MM, e.g. 14:30.');
+      return;
+    }
+    setTimeError(null);
+
+    const trimmedTransit = transitDesc.trim();
+
     // Spread the original item first so fields this form doesn't expose
-    // (mapCoords, flightDetails, hotelDetails, terminal, bookingRef, nights)
-    // survive the edit instead of being dropped.
+    // (mapCoords, price, rating, terminal, bookingRef, nights) survive the edit
+    // instead of being dropped.
     const updated: TimelineItem = {
-      ...item,
+      ...(item ?? ({} as TimelineItem)),
       id: item?.id || `item-custom-${Date.now()}`,
-      time,
+      time: normalizedTime,
       type,
       tag,
-      title,
-      subtitle,
+      title: title.trim(),
+      subtitle: subtitle.trim(),
       details: details.trim() || undefined,
       image: imageUrl.trim() || undefined,
-      transitToNext: transitDesc.trim()
+      transitToNext: trimmedTransit
         ? {
-            type: transitDesc.toLowerCase().includes('walk') ? 'walk' : 'train',
-            description: transitDesc,
+            ...item?.transitToNext,
+            type: inferTransitType(trimmedTransit, item?.transitToNext),
+            description: trimmedTransit,
           }
         : undefined,
     };
@@ -127,11 +172,21 @@ export const EditActivityModal: React.FC<EditActivityModalProps> = ({
                 <input
                   type="text"
                   value={time}
-                  onChange={(e) => setTime(e.target.value)}
+                  onChange={(e) => {
+                    setTime(e.target.value);
+                    if (timeError) setTimeError(null);
+                  }}
                   placeholder="14:30"
-                  className="w-full bg-[#f8f9fa] border border-[#e1e3e4] rounded-xl px-3.5 py-2 text-sm focus:ring-2 focus:ring-[#0058be] outline-none"
+                  className={`w-full bg-[#f8f9fa] border rounded-xl px-3.5 py-2 text-sm focus:ring-2 outline-none ${
+                    timeError
+                      ? 'border-[#ba1a1a] focus:ring-[#ba1a1a]'
+                      : 'border-[#e1e3e4] focus:ring-[#0058be]'
+                  }`}
                   required
                 />
+                {timeError && (
+                  <p className="mt-1 text-[11px] text-[#ba1a1a]">{timeError}</p>
+                )}
               </div>
               <div>
                 <label className="block text-xs font-semibold text-[#727785] mb-1">Category Type</label>
@@ -140,11 +195,11 @@ export const EditActivityModal: React.FC<EditActivityModalProps> = ({
                   onChange={(e) => setType(e.target.value as TimelineItem['type'])}
                   className="w-full bg-[#f8f9fa] border border-[#e1e3e4] rounded-xl px-3.5 py-2 text-sm focus:ring-2 focus:ring-[#0058be] outline-none"
                 >
-                  <option value="dining">Dining / Food</option>
-                  <option value="culture">Culture / Sightseeing</option>
-                  <option value="shopping">Shopping</option>
-                  <option value="nightlife">Nightlife</option>
-                  <option value="activity">General Activity</option>
+                  {EDITABLE_TYPES.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
                 </select>
               </div>
             </div>

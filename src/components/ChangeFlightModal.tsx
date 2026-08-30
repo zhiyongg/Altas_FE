@@ -2,8 +2,8 @@
 
 import React, { useState, useEffect } from 'react';
 import { FlightOption } from '../types';
-
-const API_BASE = 'http://localhost:8000';
+import { API_BASE } from '../api';
+import { currencySymbol } from '../currency';
 
 interface ChangeFlightModalProps {
   isOpen: boolean;
@@ -58,7 +58,10 @@ export const ChangeFlightModal: React.FC<ChangeFlightModalProps> = ({
         if (!res.ok) throw new Error(`Flight search failed (${res.status})`);
         return res.json();
       })
-      .then((data: { flights: FlightOption[] }) => setFlights(data.flights))
+            // `data.flights` is absent whenever the backend returns an error body or
+            // a differently-shaped payload, and `undefined.filter(...)` further down
+            // took the whole modal out with a TypeError instead of showing a message.
+            .then((data: { flights?: FlightOption[] }) => setFlights(data.flights ?? []))
       .catch((err) => { if (err.name !== 'AbortError') setError(err.message ?? 'Failed to load flights'); })
       .finally(() => setIsLoading(false));
 
@@ -69,7 +72,16 @@ export const ChangeFlightModal: React.FC<ChangeFlightModalProps> = ({
 
   const filteredFlights = flights
     .filter((f) => selectedStops === 'all' || f.stops === 0)
-    .sort((a, b) => (sortBy === 'price' ? a.price - b.price : 0));
+    // "Best" used to be `() => 0`, i.e. the toggle changed its label but sorted
+    // nothing. Rank fewest stops first, then shortest, then cheapest.
+    .sort((a, b) => {
+      if (sortBy === 'price') return a.price - b.price;
+      if (a.stops !== b.stops) return a.stops - b.stops;
+      const durA = a.duration_minutes ?? Number.MAX_SAFE_INTEGER;
+      const durB = b.duration_minutes ?? Number.MAX_SAFE_INTEGER;
+      if (durA !== durB) return durA - durB;
+      return a.price - b.price;
+    });
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 md:p-8 bg-[#2e3132]/40 backdrop-blur-xs animate-in fade-in duration-200">
@@ -165,7 +177,10 @@ export const ChangeFlightModal: React.FC<ChangeFlightModalProps> = ({
 
               <div className="flex md:flex-col items-center md:items-end justify-between gap-2 w-full md:w-36 shrink-0 border-t md:border-t-0 md:border-l border-[#e1e3e4] pt-3 md:pt-0 md:pl-6">
                 <div className="font-bold text-lg md:text-xl text-[#191c1d]">
-                  {flight.currency === 'USD' ? '$' : `${flight.currency} `}{flight.price.toFixed(2)}
+                  {/* Any non-USD code was printed raw ("MYR 480.00"); resolve it
+                      to a real symbol instead. */}
+                  {currencySymbol(flight.currency || 'USD')}
+                  {flight.price.toFixed(2)}
                 </div>
                 <button
                   onClick={() => onSelectFlight(flight)}
