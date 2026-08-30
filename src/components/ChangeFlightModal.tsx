@@ -141,7 +141,6 @@ export const ChangeFlightModal: React.FC<ChangeFlightModalProps> = ({
               <div className="flex-1 flex items-center justify-between px-2 md:px-6">
                 <div className="text-center">
                   <div className="font-bold text-lg md:text-xl text-[#191c1d]">{flight.departure.time}</div>
-                  <div className="text-xs text-[#727785]">{flight.departure.date_label}</div>
                   <div className="text-[11px] text-[#727785]">Departure</div>
                 </div>
 
@@ -160,7 +159,6 @@ export const ChangeFlightModal: React.FC<ChangeFlightModalProps> = ({
 
                 <div className="text-center">
                   <div className="font-bold text-lg md:text-xl text-[#191c1d]">{flight.arrival.time}</div>
-                  <div className="text-xs text-[#727785]">{flight.arrival.date_label}</div>
                   <div className="text-[11px] text-[#727785]">Arrival</div>
                 </div>
               </div>
