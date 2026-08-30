@@ -89,6 +89,12 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
   const initialDates = useMemo(() => parseDateRange(value), [value]);
   const [startDate, setStartDate] = useState<Date | null>(initialDates.start);
   const [endDate, setEndDate] = useState<Date | null>(initialDates.end);
+  const today = useMemo(() => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }, []);
+
   const [hoverDate, setHoverDate] = useState<Date | null>(null);
   const [presetError, setPresetError] = useState(false);
 
@@ -108,6 +114,9 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
   const handlePrevMonth = () => {
     const prev = new Date(viewDate);
     prev.setMonth(prev.getMonth() - 1);
+    // Don't allow navigating to months entirely before the current month
+    const currentMonthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+    if (prev < currentMonthStart) return;
     setViewDate(prev);
   };
 
@@ -134,7 +143,12 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
     return time > startTime && time < endTime;
   };
 
+  const isPastDate = (date: Date) => {
+    return date.getTime() < today.getTime();
+  };
+
   const handleDateClick = (date: Date) => {
+    if (isPastDate(date)) return;
     setPresetError(false);
     if (!startDate || (startDate && endDate)) {
       // Starting new selection
@@ -200,23 +214,26 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
     // Days in current month
     for (let d = 1; d <= daysInMonth; d++) {
       const date = new Date(year, month, d);
+      const isPast = isPastDate(date);
       const isStart = isSameDay(date, startDate);
       const isEnd = isSameDay(date, endDate);
       const effectiveEnd = endDate || (startDate && hoverDate && hoverDate > startDate ? hoverDate : null);
       const inRange = isBetween(date, startDate, effectiveEnd);
 
-      let dayClasses = "h-9 w-9 text-xs flex items-center justify-center font-medium transition-all relative z-10 cursor-pointer ";
+      let dayClasses = "h-9 w-9 text-xs flex items-center justify-center font-medium transition-all relative z-10 ";
 
-      if (isStart && isEnd) {
-        dayClasses += "bg-[#0058be] text-white rounded-full font-bold shadow-xs";
+      if (isPast) {
+        dayClasses += "text-[#c8cbcf] cursor-not-allowed ";
+      } else if (isStart && isEnd) {
+        dayClasses += "bg-[#0058be] text-white rounded-full font-bold shadow-xs cursor-pointer ";
       } else if (isStart) {
-        dayClasses += "bg-[#0058be] text-white rounded-l-full font-bold shadow-xs";
+        dayClasses += "bg-[#0058be] text-white rounded-l-full font-bold shadow-xs cursor-pointer ";
       } else if (isEnd) {
-        dayClasses += "bg-[#0058be] text-white rounded-r-full font-bold shadow-xs";
+        dayClasses += "bg-[#0058be] text-white rounded-r-full font-bold shadow-xs cursor-pointer ";
       } else if (inRange) {
-        dayClasses += "text-[#001a42] font-semibold";
+        dayClasses += "text-[#001a42] font-semibold cursor-pointer ";
       } else {
-        dayClasses += "text-[#191c1d] hover:bg-[#e7e8e9] rounded-full";
+        dayClasses += "text-[#191c1d] hover:bg-[#e7e8e9] rounded-full cursor-pointer ";
       }
 
       days.push(
@@ -224,7 +241,7 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
           key={`day-${d}`}
           className="relative flex items-center justify-center h-9 w-9"
           onMouseEnter={() => {
-            if (startDate && !endDate) {
+            if (startDate && !endDate && !isPast) {
               setHoverDate(date);
             }
           }}
@@ -243,6 +260,7 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
           <button
             type="button"
             onClick={() => handleDateClick(date)}
+            disabled={isPast}
             className={dayClasses}
           >
             {d}
@@ -340,7 +358,13 @@ export const DateRangePicker: React.FC<DateRangePickerProps> = ({
           <button
             type="button"
             onClick={handlePrevMonth}
-            className="p-1.5 rounded-full hover:bg-[#f3f4f5] text-[#424754] hover:text-[#191c1d] transition-colors flex items-center justify-center cursor-pointer"
+            disabled={(() => {
+              const prev = new Date(viewDate);
+              prev.setMonth(prev.getMonth() - 1);
+              const currentMonthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+              return prev < currentMonthStart;
+            })()}
+            className="p-1.5 rounded-full hover:bg-[#f3f4f5] text-[#424754] hover:text-[#191c1d] transition-colors flex items-center justify-center cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-transparent"
             title="Previous Month"
           >
             <span className="material-symbols-outlined text-[20px]">chevron_left</span>
