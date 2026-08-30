@@ -34,6 +34,36 @@ import { ExploreView } from './components/ExploreView';
 
 const API_BASE_URL = 'http://127.0.0.1:8000';
 
+// agent.py's Flight.dep_time/arr_time (used for apiData.flights, the initial
+// generated flights) sometimes comes back as a full ISO datetime
+// ("2026-09-24T23:50:00") rather than a plain "HH:MM" like flights.py's
+// FlightOption uses. Every place we display or sort by these values wants
+// just the clock time, so normalize once at the point they're read.
+const toHHMM = (raw?: string | null, fallback = '00:00'): string => {
+  if (!raw) return fallback;
+  const match = raw.match(/(\d{2}:\d{2})/);
+  return match ? match[1] : fallback;
+};
+
+// Maps the backend's schedule-entry "kind" field onto the frontend's
+// TimelineItem['type'] union. Widened beyond meal/hotel/flight so activities
+// added with a specific category (dining/culture/nature/shopping/nightlife —
+// see categoryToType in handleAddActivity) round-trip with that category
+// intact instead of collapsing to generic "activity" the next time the
+// itinerary reloads from /api/chat or /api/itinerary/item. Any kind not
+// listed here (e.g. the planner's own "attraction") still falls back to
+// 'activity', matching the old behavior.
+const KIND_TO_TYPE: Record<string, TimelineItem['type']> = {
+  meal: 'dining',
+  flight: 'flight',
+  dining: 'dining',
+  culture: 'culture',
+  nature: 'nature',
+  shopping: 'shopping',
+  nightlife: 'nightlife',
+  activity: 'activity',
+};
+
 const formatActivityDetails = (
   rating?: number | string | null,
   duration?: number | string | null,
@@ -174,8 +204,8 @@ export const App: React.FC = () => {
   const [trip, setTrip] = useState<Trip>(emptyTrip);
   const [activeTab, setActiveTab] = useState<NavTab>('trips');
   const [isMapView, setIsMapView] = useState<boolean>(false);
-  const [activeView, setActiveView] = useState<
-    'landing' | 'workspace' | 'finalize_pay' | 'archive'
+  const [activeView, setActiveView] = useState <
+    'landing' | 'workspace' | 'finalize_pay' | 'archive' | 'explore'
   >('landing');
   const [activeDayIndex, setActiveDayIndex] = useState<number>(0);
   const [hasGeneratedItinerary, setHasGeneratedItinerary] =
@@ -208,6 +238,24 @@ export const App: React.FC = () => {
     adults: 2,
     rooms: 1,
     children: 0,
+  });
+
+  const [flightSearchParams, setFlightSearchParams] = useState<{
+    origin: string;
+    destination: string;
+    departDate: string;
+    returnDate: string;
+    adults: number;
+    childrenCount: number;
+    infants: number;
+  }>({
+    origin: '',
+    destination: '',
+    departDate: '',
+    returnDate: '',
+    adults: 2,
+    childrenCount: 0,
+    infants: 0,
   });
 
   // AI Chat state
@@ -254,58 +302,63 @@ export const App: React.FC = () => {
     setActiveView('workspace');
   };
 
+  // Best-effort "where in the trip is the user currently looking" coords,
+  // used to bias/rank Add Activity search results and compute distance
+  // labels. Falls back through: active day's first located stop -> any
+  // day's first located stop -> undefined (search still works, just
+  // without proximity ranking).
+  const getActivitySearchOrigin = (): { lat?: number; lng?: number } => {
+    const findCoords = (day: (typeof trip.days)[number] | undefined) =>
+      day?.items.find((it) => it.mapCoords?.lat != null && it.mapCoords?.lng != null)?.mapCoords;
+
+    const coords = findCoords(trip.days[activeDayIndex]) ?? trip.days.map(findCoords).find(Boolean);
+    return { lat: coords?.lat, lng: coords?.lng };
+  };
+
   // Switch Flight
-  const handleSelectFlight = (flight: FlightOption) => {
+  const handleSelectFlight = async (flight: FlightOption) => {
     setTrip((prev) => {
       const newFlightPricePerPax = flight.price;
       const newFlightsTotal = newFlightPricePerPax * prev.travelersCount;
-
       const updatedDays = prev.days.map((day) => ({
         ...day,
         items: day.items.map((item) => {
-          if (item.type === 'flight') {
-            return {
-              ...item,
-              title: `Arrival via ${flight.airline}`,
-              subtitle: `${flight.flightCode} • ${flight.from} to ${prev.destination.split(',')[0]}`,
-              time: flight.arriveTime,
-              bookingRef: `${flight.flightCode.slice(0, 2)}-${Math.floor(1000 + Math.random() * 9000)}`,
-              terminal: 'T1',
-              flightDetails: item.flightDetails
-                ? {
-                    ...item.flightDetails,
-                    price: newFlightPricePerPax,
-                    carrier: flight.airline,
-                    flightNumber: flight.flightCode,
-                    depAirport: flight.from,
-                    arrTime: flight.arriveTime,
-                    depTime: flight.departTime,
-                    currency: item.flightDetails.currency || 'USD',
-                  }
-                : undefined,
-            };
-          }
-          return item;
+          if (item.type !== 'flight') return item;
+          const isReturn = item.flightDetails?.direction === 'return';
+          return {
+            ...item,
+            title: isReturn ? `Return via ${flight.airline}` : `Arrival via ${flight.airline}`,
+            subtitle: `${flight.flight_number} • ${flight.departure.airport_code} to ${flight.arrival.airport_code}`,
+            time: isReturn ? flight.departure.time : flight.arrival.time,
+            bookingRef: `${(flight.airline_code || flight.flight_number).slice(0, 2)}-${Math.floor(1000 + Math.random() * 9000)}`,
+            terminal: 'T1',
+            flightDetails: item.flightDetails
+              ? {
+                  ...item.flightDetails,
+                  price: newFlightPricePerPax,
+                  carrier: flight.airline,
+                  flightNumber: flight.flight_number,
+                  depAirport: flight.departure.airport_code,
+                  arrAirport: flight.arrival.airport_code,
+                  arrTime: flight.arrival.time,
+                  depTime: flight.departure.time,
+                  currency: flight.currency || item.flightDetails.currency || 'USD',
+                }
+              : undefined,
+          };
         }),
       }));
-
       return {
         ...prev,
         days: updatedDays,
-        costs: {
-          ...prev.costs,
-          flights: newFlightsTotal,
-          // Estimated total = hotel + flights only (activities excluded from total)
-          usdEstimate: prev.costs.accommodation + newFlightsTotal,
-        },
+        costs: { ...prev.costs, flights: newFlightsTotal, usdEstimate: prev.costs.accommodation + newFlightsTotal },
       };
     });
-
     // Add confirmation to chat
     const confirmMsg: ChatMessage = {
       id: `msg-${Date.now()}`,
       sender: 'ai',
-      text: `Updated your flight to ${flight.airline} (${flight.flightCode}) arriving at ${flight.arriveTime}. Recalculated your total budget!`,
+      text: `Updated your flight to ${flight.airline} (${flight.flight_number}) arriving at ${flight.arrival.time}. Recalculated your total budget!`,
       timestamp: 'Just now',
     };
     setChatMessages((prev) => [...prev, confirmMsg]);
@@ -320,22 +373,33 @@ export const App: React.FC = () => {
   // different one. This used to only accept `stay` and always priced off
   // stay.selected_room, silently ignoring the room the user actually chose.
   const handleSelectAccommodation = (stay: StayOption, room: RoomOption) => {
-    const locationLabel =
-      [stay.address, stay.city].filter(Boolean).join(', ') || stay.name;
+    const locationLabel = [stay.address, stay.city].filter(Boolean).join(', ') || stay.name;
 
     setTrip((prev) => {
       const updatedDays = prev.days.map((day) => ({
         ...day,
         items: day.items.map((item) => {
-          if (item.type === 'hotel') {
-            return {
-              ...item,
-              title: `Check-in: ${stay.name}`,
-              subtitle: `${locationLabel} • Confirmed`,
-              image: stay.image_url ?? item.image,
-            };
-          }
-          return item;
+          if (item.type !== 'hotel') return item;
+          // Preserve which boundary this card represents — don't relabel a
+          // checkout card as "Check-in" just because we're updating the stay.
+          const isCheckout = item.tag === 'Hotel Check-out';
+          return {
+            ...item,
+            title: `${isCheckout ? 'Check-out' : 'Check-in'}: ${stay.name}`,
+            subtitle: locationLabel,
+            image: stay.image_url ?? item.image,
+            hotelDetails: item.hotelDetails
+              ? {
+                  ...item.hotelDetails,
+                  name: stay.name,
+                  address: locationLabel,
+                  roomType: room.room_name,
+                  pricePerNight: room.price_per_night,
+                  totalPrice: room.total_price,
+                  currency: room.currency,
+                }
+              : item.hotelDetails,
+          };
         }),
       }));
 
@@ -343,71 +407,148 @@ export const App: React.FC = () => {
       return {
         ...prev,
         days: updatedDays,
-        costs: {
-          ...prev.costs,
-          accommodation: newAccomTotal,
-          // Estimated total = hotel + flights only (activities excluded from total)
-          usdEstimate: newAccomTotal + prev.costs.flights,
-        },
+        costs: { ...prev.costs, accommodation: newAccomTotal, usdEstimate: newAccomTotal + prev.costs.flights },
       };
     });
 
     const confirmMsg: ChatMessage = {
       id: `msg-${Date.now()}`,
       sender: 'ai',
-      text: `Upgraded your stay to ${stay.name} (${locationLabel}) — ${room.room_name}. Total accommodation updated to ${currencySymbol(
-        room.currency,
-      )}${room.total_price.toLocaleString()}.`,
+      text: `Upgraded your stay to ${stay.name} (${locationLabel}) — ${room.room_name}. Total accommodation updated to ${currencySymbol(room.currency)}${room.total_price.toLocaleString()}.`,
       timestamp: 'Just now',
     };
     setChatMessages((prev) => [...prev, confirmMsg]);
     setIsAccommodationModalOpen(false);
   };
 
-  // Add Activity to current day
-  const handleAddActivity = (activity: ActivityOption) => {
+  // Shared by handleReorderItems and handleAddActivity: given a day's items
+// (already time-sorted), fetches real transit legs between consecutive
+// stops with coordinates and returns the day's items with transitToNext
+// filled in from routing data. Returns null if routing is unavailable.
+  const computeRefinedTransit = async (items: TimelineItem[]): Promise<TimelineItem[] | null> => {
+    const waypoints = items
+      .filter((it) => it.mapCoords?.lat != null && it.mapCoords?.lng != null)
+      .map((it) => ({ id: it.id, lat: it.mapCoords!.lat!, lng: it.mapCoords!.lng! }));
+    if (waypoints.length < 2) return null;
+
+    const legs = await recalculateRoute(waypoints);
+    if (!legs) return null;
+
+    return items.map((item, idx) => {
+      const next = items[idx + 1];
+      if (!next) return item;
+      const leg = legs.find((l) => l.fromId === item.id && l.toId === next.id);
+      if (!leg) return item;
+
+      const mins = Math.max(1, Math.round(leg.durationMinutes));
+      const meters = Math.round(leg.distanceMeters);
+      const isWalk = leg.mode === 'walk';
+      return {
+        ...item,
+        transitToNext: {
+          type: leg.mode,
+          description: isWalk
+            ? `Walk --- ${meters}m (${mins} mins) ---> ${next.title}`
+            : `Transit --- ${mins} mins ---> ${next.title}`,
+          duration: `${mins} mins`,
+          distance: meters >= 1000 ? `${(meters / 1000).toFixed(1)}km` : `${meters}m`,
+        },
+      };
+    });
+  };
+
+  // Add Activity to current day — now searches and persists via the real
+  // backend (Google Places through /activity/search for the picker,
+  // /api/itinerary/item to save the chosen item) instead of only updating
+  // local state with a hardcoded mock cost bump.
+  // Add Activity to current day — now persists via the same
+  // /api/itinerary/item endpoint used for edit/delete, instead of only
+  // updating local state with a hardcoded mock cost bump.
+  const handleAddActivity = async (activity: ActivityOption) => {
+    const hasCoords = activity.latitude != null && activity.longitude != null;
+
     const newItem: TimelineItem = {
       id: `item-${Date.now()}`,
       time: '19:30',
-      type:
-        activity.category === 'Dining'
-          ? 'dining'
-          : activity.category === 'Nature'
-            ? 'culture'
-            : 'activity',
+      type: activity.category === 'Dining' ? 'dining' : activity.category === 'Nature' ? 'culture' : 'activity',
       tag: activity.category,
       title: activity.title,
       subtitle: activity.description,
       image: activity.image,
-      rating: activity.rating,
-      reviewsCount: activity.reviewsCount,
-      details: formatActivityDetails(activity.rating, 60),
-      transitToNext: {
-        type: 'walk',
-        description: `Walk --- 500m (6 mins) ---> ${activity.title}`,
-      },
+      details: `Rating: ${activity.rating} ⭐ (${activity.reviewsCount} reviews) • Distance: ${activity.distance}`,
+      mapCoords: hasCoords ? { x: 0, y: 0, lat: activity.latitude!, lng: activity.longitude! } : undefined,
+      // Placeholder — overwritten below by computeRefinedTransit whenever
+      // we actually have coordinates to route between.
+      transitToNext: { type: 'walk', description: `Walk --- 500m (6 mins) ---> ${activity.title}` },
     };
 
-    setTrip((prev) => {
-      const updatedDays = [...prev.days];
-      const targetDay = updatedDays[activeDayIndex] || updatedDays[0];
-      targetDay.items = [...targetDay.items, newItem];
+    const dayNumber = activeDayIndex + 1;
+    let persisted = false;
+    let resultingDayItems: TimelineItem[] | null = null;
 
-      return {
-        ...prev,
-        days: updatedDays,
-        costs: {
-          ...prev.costs,
-          // Activity cost tracked in data model but NOT included in estimated total
-          activities: prev.costs.activities + 6000,
-        },
-      };
-    });
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/itinerary/item`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: chatSessionId,
+          day_number: dayNumber,
+          item: {
+            id: newItem.id,
+            time: newItem.time,
+            kind: newItem.type === 'dining' ? 'meal' : newItem.type,
+            name: newItem.title,
+            notes: newItem.details,
+            // Backend stores this verbatim with no geocoding of its own —
+            // if we don't send real coordinates here, they're gone for good.
+            location: hasCoords
+              ? { latitude: activity.latitude, longitude: activity.longitude, name: activity.title }
+              : undefined,
+          },
+        }),
+      });
+      if (!response.ok) throw new Error(`Failed to add activity (${response.status})`);
+      const data = await response.json();
+      if (data.itinerary?.daily_itinerary?.days) {
+        setTrip((prev) => {
+          const next = mapChatItineraryToTrip(data.itinerary.daily_itinerary, prev);
+          resultingDayItems = next.days[activeDayIndex]?.items ?? null;
+          return { ...next, costs: { ...next.costs, activities: prev.costs.activities + 6000 } };
+        });
+        persisted = true;
+      }
+    } catch (error) {
+      console.error('Error adding activity:', error);
+    }
+
+    if (!persisted) {
+      setTrip((prev) => {
+        const updatedDays = prev.days.map((day, idx) =>
+          idx === activeDayIndex ? { ...day, items: [...day.items, newItem] } : day,
+        );
+        resultingDayItems = updatedDays[activeDayIndex]?.items ?? null;
+        return { ...prev, days: updatedDays, costs: { ...prev.costs, activities: prev.costs.activities + 6000 } };
+      });
+    }
+
+    if (resultingDayItems) {
+      const refined = await computeRefinedTransit(resultingDayItems);
+      if (refined) {
+        setTrip((prev) => {
+          const day = prev.days[activeDayIndex];
+          if (!day) return prev;
+          const stillSame = day.items.map((it) => it.id).join('|') === resultingDayItems!.map((it) => it.id).join('|');
+          if (!stillSame) return prev;
+          const updatedDays = prev.days.map((d, idx) => (idx !== activeDayIndex ? d : { ...d, items: refined }));
+          return { ...prev, days: updatedDays };
+        });
+      }
+    }
 
     const confirmMsg: ChatMessage = {
       id: `msg-${Date.now()}`,
       sender: 'ai',
-      text: `Added "${activity.title}" to ${trip.days[activeDayIndex].dateLabel}. Optimal transit route mapped.`,
+      text: `Added "${activity.title}" to ${trip.days[activeDayIndex]?.dateLabel ?? 'your itinerary'}. Optimal transit route mapped.`,
       timestamp: 'Just now',
     };
     setChatMessages((prev) => [...prev, confirmMsg]);
@@ -415,27 +556,60 @@ export const App: React.FC = () => {
   };
 
   // Edit / Save Timeline Item
-  const handleSaveEditedItem = (savedItem: TimelineItem) => {
-    setTrip((prev) => {
-      const updatedDays = prev.days.map((day, idx) => {
-        if (idx !== activeDayIndex) return day;
-        const exists = day.items.some((it) => it.id === savedItem.id);
-        const newItems = exists
-          ? day.items.map((it) => (it.id === savedItem.id ? savedItem : it))
-          : [...day.items, savedItem];
-
-        // Sort items chronologically by time
-        newItems.sort((a, b) => timeToMinutes(a.time) - timeToMinutes(b.time));
-        return { ...day, items: newItems };
+  const handleSaveEditedItem = async (savedItem: TimelineItem) => {
+    const dayNumber = activeDayIndex + 1;
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/itinerary/item`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: chatSessionId,
+          day_number: dayNumber,
+          item: {
+            id: savedItem.id,
+            time: savedItem.time,
+            kind: savedItem.type === 'dining' ? 'meal' : savedItem.type,
+            name: savedItem.title,
+            notes: savedItem.details,
+            location: savedItem.mapCoords
+              ? {
+                  latitude: savedItem.mapCoords.lat,
+                  longitude: savedItem.mapCoords.lng,
+                  name: savedItem.subtitle,
+                }
+              : undefined,
+          },
+        }),
       });
-      return { ...prev, days: updatedDays };
-    });
-
-    setIsEditItemModalOpen(false);
-    setEditingItem(null);
+      if (!response.ok) throw new Error(`Failed to save item (${response.status})`);
+      const data = await response.json();
+      if (data.itinerary?.daily_itinerary?.days) {
+        setTrip((prev) => mapChatItineraryToTrip(data.itinerary.daily_itinerary, prev));
+      }
+    } catch (error) {
+      console.error('Error saving itinerary item:', error);
+      // optimistic local fallback so the UI doesn't feel broken if the API is down
+      setTrip((prev) => {
+        const updatedDays = prev.days.map((day, idx) => {
+          if (idx !== activeDayIndex) return day;
+          const exists = day.items.some((it) => it.id === savedItem.id);
+          const newItems = exists
+            ? day.items.map((it) => (it.id === savedItem.id ? savedItem : it))
+            : [...day.items, savedItem];
+          newItems.sort((a, b) => timeToMinutes(a.time) - timeToMinutes(b.time));
+          return { ...day, items: newItems };
+        });
+        return { ...prev, days: updatedDays };
+      });
+    } finally {
+      setIsEditItemModalOpen(false);
+      setEditingItem(null);
+    }
   };
 
   // Reorder items in the active day (drag-and-drop)
+
+// Reorder items in the active day (drag-and-drop)
   const handleReorderItems = (newItems: TimelineItem[]) => {
     const currentDayItems = trip.days[activeDayIndex]?.items;
     if (!currentDayItems) return;
@@ -456,13 +630,8 @@ export const App: React.FC = () => {
 
     refineTimerRef.current = setTimeout(async () => {
       const seq = ++refineSeqRef.current;
-      const waypoints = recalculated
-        .filter((it) => it.mapCoords?.lat != null && it.mapCoords?.lng != null)
-        .map((it) => ({ id: it.id, lat: it.mapCoords!.lat!, lng: it.mapCoords!.lng! }));
-      if (waypoints.length < 2) return;
-
-      const legs = await recalculateRoute(waypoints);
-      if (!legs) {
+      const refined = await computeRefinedTransit(recalculated);
+      if (!refined) {
         console.warn('Transit refinement unavailable; keeping optimistic estimates.');
         return;
       }
@@ -475,49 +644,56 @@ export const App: React.FC = () => {
         // Ignore if the day's item order changed since the request was made
         if (day.items.map((it) => it.id).join('|') !== orderSignature) return prev;
 
-        const refinedItems = day.items.map((item, idx) => {
-          const next = day.items[idx + 1];
-          if (!next) return item;
-          const leg = legs.find((l) => l.fromId === item.id && l.toId === next.id);
-          if (!leg) return item;
-
-          const mins = Math.max(1, Math.round(leg.durationMinutes));
-          const meters = Math.round(leg.distanceMeters);
-          const isWalk = leg.mode === 'walk';
-          return {
-            ...item,
-            transitToNext: {
-              type: leg.mode,
-              description: isWalk
-                ? `Walk --- ${meters}m (${mins} mins) ---> ${next.title}`
-                : `Transit --- ${mins} mins ---> ${next.title}`,
-              duration: `${mins} mins`,
-              distance: meters >= 1000 ? `${(meters / 1000).toFixed(1)}km` : `${meters}m`,
-            },
-          };
-        });
-
-        const updatedDays = prev.days.map((d, idx) =>
-          idx !== dayIndex ? d : { ...d, items: refinedItems }
-        );
+        const updatedDays = prev.days.map((d, idx) => (idx !== dayIndex ? d : { ...d, items: refined }));
         return { ...prev, days: updatedDays };
       });
     }, 800);
   };
 
   // Delete item
-  const handleDeleteItem = (itemId: string) => {
+const handleDeleteItem = async (itemId: string) => {
+  const day = trip.days[activeDayIndex];
+  const itemToDelete = day?.items.find((it) => it.id === itemId);
+  if (!itemToDelete) return;
+
+  // Flights/hotels aren't part of chat.py's Place model — nothing to call.
+  if (itemToDelete.type === 'flight' || itemToDelete.type === 'hotel') {
+    console.warn('Flight/hotel items cannot be deleted via the itinerary chat layer.');
+    return;
+  }
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/itinerary/action`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_id: chatSessionId,
+        action: 'REMOVE_PLACE',
+        params: {
+          place_name: itemToDelete.title,
+          day: activeDayIndex, // chat.py days are 0-indexed already
+        },
+      }),
+    });
+    if (!response.ok) throw new Error(`Failed to delete item (${response.status})`);
+    const data = await response.json();
+    if (data.itinerary?.daily_itinerary?.days) {
+      setTrip((prev) => mapChatItineraryToTrip(data.itinerary.daily_itinerary, prev));
+    }
+  } catch (error) {
+    console.error('Error deleting itinerary item:', error);
+    // Local-only fallback: remove from view even if the API call failed.
+    // Will be overwritten by the server's version on next sync.
     setTrip((prev) => {
-      const updatedDays = prev.days.map((day, idx) => {
-        if (idx !== activeDayIndex) return day;
-        return {
-          ...day,
-          items: day.items.filter((it) => it.id !== itemId),
-        };
-      });
+      const updatedDays = prev.days.map((d, idx) =>
+        idx !== activeDayIndex
+          ? d
+          : { ...d, items: d.items.filter((it) => it.id !== itemId) },
+      );
       return { ...prev, days: updatedDays };
     });
-  };
+  }
+};
 
   // AI Chat & Intent Processing
   const handleSendMessage = async (userText: string) => {
@@ -695,8 +871,8 @@ export const App: React.FC = () => {
             arrAirport:
               outboundFlightData.arr_airport ||
               destination.slice(0, 3).toUpperCase(),
-            depTime: outboundFlightData.dep_time || '08:30',
-            arrTime: outboundFlightData.arr_time || '11:45',
+            depTime: toHHMM(outboundFlightData.dep_time, '08:30'),
+            arrTime: toHHMM(outboundFlightData.arr_time, '11:45'),
             cabin: outboundFlightData.cabin || 'Economy',
             price: outboundFlightData.price?.total || 250,
             currency: outboundFlightData.price?.currency || 'USD',
@@ -723,8 +899,8 @@ export const App: React.FC = () => {
               returnFlightData.dep_airport ||
               destination.slice(0, 3).toUpperCase(),
             arrAirport: returnFlightData.arr_airport || 'ORIGIN',
-            depTime: returnFlightData.dep_time || '17:30',
-            arrTime: returnFlightData.arr_time || '20:45',
+            depTime: toHHMM(returnFlightData.dep_time, '17:30'),
+            arrTime: toHHMM(returnFlightData.arr_time, '20:45'),
             cabin: returnFlightData.cabin || 'Economy',
             price: returnFlightData.price?.total || 250,
             currency: returnFlightData.price?.currency || 'USD',
@@ -742,6 +918,7 @@ export const App: React.FC = () => {
             currency: 'USD',
           };
 
+      
       const rawDailyItinerary =
         apiData.daily_itinerary?.days ||
         (Array.isArray(apiData.daily_itinerary) ? apiData.daily_itinerary : []);
@@ -751,11 +928,19 @@ export const App: React.FC = () => {
         (day: any, dayIdx: number) => {
           const isFirstDay = dayIdx === 0;
           const isLastDay = dayIdx === totalDays - 1;
-
-          let items = (day.schedule || []).map((item: any, index: number) => {
-            let itemType: 'activity' | 'hotel' | 'dining' | 'flight' =
-              'activity';
-            if (item.kind === 'hotel') itemType = 'hotel';
+          // Drop the planner's generic "Return to Hotel" rest beat when it
+          // falls outside the actual stay window — before the guest has
+          // checked in on arrival day, or after they've already checked out
+          // on departure day. The real check-in/check-out moments are
+          // covered by the synthesized hotelDetails cards below instead.
+          const schedule = (day.schedule || []).filter((item: any) => {
+            const isReturnToHotel = item.kind === 'hotel' && String(item.name || '').includes('Return to Hotel');
+            if (isReturnToHotel && isFirstDay && item.time < hotelDetails.checkIn) return false;
+            if (isReturnToHotel && isLastDay && item.time > hotelDetails.checkOut) return false;
+            return true;
+          });
+          const items = schedule.map((item: any, index: number) => {
+            let itemType: 'activity' | 'hotel' | 'dining' | 'flight' = 'activity';
             if (item.kind === 'meal') itemType = 'dining';
             if (
               item.kind === 'flight' ||
@@ -763,25 +948,33 @@ export const App: React.FC = () => {
               item.name.toLowerCase().includes('arrival')
             )
               itemType = 'flight';
+            // kind 'hotel' ("Return to Hotel") and 'hotel_checkin' (mid-day early
+            // arrival check-in) are real itinerary beats, but never the rich
+            // booking card — that's reserved for the two synthesized boundary
+            // cards below. Falls through to plain 'activity'.
 
             return {
-              id: `item-${day.day || dayIdx}-${index}-${Date.now()}`,
+              id: `item-${day.day || dayIdx}-${index}`,
               time: item.time,
               type: itemType,
-              tag: item.kind
-                ? item.kind.charAt(0).toUpperCase() + item.kind.slice(1)
+              tag:
+                item.kind === 'hotel' ? 'Rest'
+                : item.kind === 'hotel_checkin' ? 'Hotel Check-in'
+                : item.kind ? item.kind.charAt(0).toUpperCase() + item.kind.slice(1)
                 : 'Activity',
               title: item.name,
               subtitle: item.location?.name || 'Location confirmed',
-              details: item.rating
-                ? `Rating: ${item.rating} ⭐ • Duration: ${item.duration_min || 60} mins`
-                : undefined,
+              details: item.rating ? `Rating: ${item.rating} ⭐ • Duration: ${item.duration_min || 60} mins` : undefined,
               mapCoords: item.location
+                ? { x: 0, y: 0, lat: item.location.latitude, lng: item.location.longitude }
+                : undefined,
+              // Planner already computed real transit for every leg — surface it
+              // immediately instead of only backfilling it via computeRefinedTransit
+              // after a later add/reorder action.
+              transitToNext: item.transit_to_next
                 ? {
-                    x: 0,
-                    y: 0,
-                    lat: item.location.latitude,
-                    lng: item.location.longitude,
+                    type: item.transit_to_next.mode === 'walk' ? 'walk' : item.transit_to_next.mode === 'train' ? 'train' : 'bus',
+                    description: item.transit_to_next.description || '',
                   }
                 : undefined,
               hotelDetails: itemType === 'hotel' ? hotelDetails : undefined,
@@ -808,68 +1001,52 @@ export const App: React.FC = () => {
           // Ensure Day 1 has explicit Flight Arrival and Hotel Check-in items if not present
           if (isFirstDay) {
             const hasFlight = items.some((it: any) => it.type === 'flight');
-            const hasHotel = items.some((it: any) => it.type === 'hotel');
-
             if (!hasFlight) {
               items.unshift({
-                id: `item-flight-outbound-${Date.now()}`,
+                id: `item-flight-outbound-day${dayIdx + 1}`,
                 time: outboundDetails.arrTime,
                 type: 'flight',
-                tag: 'Outbound Flight',
-                title: `Arrival via ${outboundDetails.carrier} (${outboundDetails.flightNumber})`,
-                subtitle: `${outboundDetails.depAirport} ➔ ${outboundDetails.arrAirport} • ${outboundDetails.cabin}`,
-                terminal: 'Terminal 1',
-                bookingRef: `${outboundDetails.flightNumber.replace(' ', '')}-REF`,
+                tag: 'Flight',
+                title: `${outboundDetails.carrier} ${outboundDetails.flightNumber}`,
+                subtitle: `${outboundDetails.depAirport} → ${outboundDetails.arrAirport}`,
                 flightDetails: outboundDetails,
               });
             }
 
-            if (!hasHotel) {
-              items.push({
-                id: `item-hotel-checkin-${Date.now()}`,
-                time: hotelDetails.checkIn || '15:00',
-                type: 'hotel',
-                tag: 'Hotel Check-in',
-                title: `Check-in: ${hotelDetails.name}`,
-                subtitle: `${hotelDetails.address} • Confirmed`,
-                nights: hotelDetails.totalNights,
-                hotelDetails: hotelDetails,
-              });
-            }
+            items.push({
+              id: `item-hotel-checkin-day${dayIdx + 1}`,
+              time: hotelDetails.checkIn,
+              type: 'hotel',
+              tag: 'Hotel Check-in',
+              title: `Check-in: ${hotelDetails.name}`,
+              subtitle: hotelDetails.address,
+              nights: hotelDetails.totalNights,
+              hotelDetails,
+            });
           }
 
-          // Ensure Final Day has Return Flight if not present
           if (isLastDay) {
-            const hasCheckout = items.some(
-              (it: any) => it.type === 'hotel' && it.tag === 'Hotel Check-out',
-            );
-            if (!hasCheckout) {
-              items.push({
-                id: `item-hotel-checkout-${Date.now()}`,
-                time: hotelDetails.checkOut || '11:00',
-                type: 'hotel',
-                tag: 'Hotel Check-out',
-                title: `Check-out: ${hotelDetails.name}`,
-                subtitle: `${hotelDetails.address}`,
-                hotelDetails: hotelDetails,
-              });
-            }
+            items.push({
+              id: `item-hotel-checkout-day${dayIdx + 1}`,
+              time: hotelDetails.checkOut,
+              type: 'hotel',
+              tag: 'Hotel Check-out',
+              title: `Check-out: ${hotelDetails.name}`,
+              subtitle: hotelDetails.address,
+              hotelDetails,
+            });
 
             const hasReturnFlight = items.some(
-              (it: any) =>
-                it.type === 'flight' &&
-                it.flightDetails?.direction === 'return',
+              (it: any) => it.type === 'flight' && it.flightDetails?.direction === 'return',
             );
             if (!hasReturnFlight) {
               items.push({
-                id: `item-flight-return-${Date.now()}`,
+                id: `item-flight-return-day${dayIdx + 1}`,
                 time: returnDetails.depTime,
                 type: 'flight',
-                tag: 'Return Flight',
-                title: `Departure via ${returnDetails.carrier} (${returnDetails.flightNumber})`,
-                subtitle: `${returnDetails.depAirport} ➔ ${returnDetails.arrAirport} • ${returnDetails.cabin}`,
-                terminal: 'Terminal 2',
-                bookingRef: `${returnDetails.flightNumber.replace(' ', '')}-RET`,
+                tag: 'Flight',
+                title: `${returnDetails.carrier} ${returnDetails.flightNumber}`,
+                subtitle: `${returnDetails.depAirport} → ${returnDetails.arrAirport}`,
                 flightDetails: returnDetails,
               });
             }
@@ -885,6 +1062,23 @@ export const App: React.FC = () => {
           };
         },
       );
+
+      const newFlightSearchParams = {
+        origin: outboundDetails.depAirport,
+        destination: outboundDetails.arrAirport,
+        departDate:
+          apiData.trip_overview?.start_date ||
+          rawDailyItinerary[0]?.date ||
+          '',
+        returnDate:
+          apiData.trip_overview?.end_date ||
+          rawDailyItinerary[rawDailyItinerary.length - 1]?.date ||
+          '',
+        adults: travelersCount,
+        childrenCount: 0,
+        infants: 0,
+      };
+      setFlightSearchParams(newFlightSearchParams);
 
       const newTrip: Trip = {
         id: `trip-${Date.now()}`,
@@ -1112,12 +1306,21 @@ export const App: React.FC = () => {
         isOpen={isFlightModalOpen}
         onClose={() => setIsFlightModalOpen(false)}
         onSelectFlight={handleSelectFlight}
+        origin={flightSearchParams.origin}
+        destination={flightSearchParams.destination}
+        departDate={flightSearchParams.departDate}
+        returnDate={flightSearchParams.returnDate}
+        adults={flightSearchParams.adults}
+        childrenCount={flightSearchParams.childrenCount}
+        infants={flightSearchParams.infants}
       />
 
       <AddActivityModal
         isOpen={isActivityModalOpen}
         onClose={() => setIsActivityModalOpen(false)}
         onAddActivity={handleAddActivity}
+        originLat={getActivitySearchOrigin().lat}
+        originLng={getActivitySearchOrigin().lng}
       />
 
       <ChangeAccommodationModal
